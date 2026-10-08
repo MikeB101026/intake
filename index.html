@@ -682,13 +682,17 @@ async function readBox(id, opts) {
   const b0 = S.boxes.get(id); if (!b0) return;
   const ph = b0.photos.map(pid => S.photos.get(pid)).filter(Boolean);
   if (!ph.length) return;
-  // Tag every photo shipping label vs contents: barcode already did some; Claude decides the rest.
+  // Claude tags every photo shipping label vs contents. If that fails (no backend, no signal),
+  // the photos stay untagged so the next "Read again" sorts them properly.
   const undecided = ph.filter(p => !p.kind);
   if (undecided.length) {
     try {
       const kinds = await classify(undecided.map(p => p.blob));
       for (let i = 0; i < undecided.length; i++) { undecided[i].kind = kinds[i].kind; await putPhoto(undecided[i]); }
-    } catch (e) { undecided.forEach(p => { p.kind = 'item'; }); }
+    } catch (e) {
+      await patchBox(id, b => { if (!b.sheetRow) b.status = 'error'; b.readError = (e && e.message) || 'Claude couldn’t sort the photos. Tap Read again.'; });
+      return;
+    }
   }
   const labels = ph.filter(p => p.kind === 'label'), items = ph.filter(p => p.kind !== 'label');
   const wasSent = !!b0.sheetRow;
