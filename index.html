@@ -1,0 +1,1181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#15191B">
+<title>700 Islands Intake</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Mono:wght@500;600&display=swap">
+<style>
+:root{
+  --bg:#E2E5E1; --card:#FBFBF8; --ink:#15191B; --muted:#596266; --line:#C9CECB; --line2:#DEE2DF;
+  --tape:#F2B705; --tape-ink:#1C1600; --kraft:#C3925F; --kraft-ink:#2A1907;
+  --flag-bg:#FBE6CF; --flag-ink:#87400A; --ok-bg:#D9EFE0; --ok-ink:#1D5B35;
+  --bad-bg:#F8DCDA; --bad-ink:#8A1C17; --info-bg:#DFE7F1; --info-ink:#21405E;
+  --f-display:"Barlow Condensed","Arial Narrow",system-ui,sans-serif;
+  --f-body:"Barlow",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){:root{
+  --bg:#101315; --card:#1A1E21; --ink:#ECEFEC; --muted:#9AA3A8; --line:#30373B; --line2:#252B2F;
+  --tape:#F4BF28; --tape-ink:#1C1600; --kraft:#A77A4C; --kraft-ink:#1C1105;
+  --flag-bg:#3A2410; --flag-ink:#F5B878; --ok-bg:#16301F; --ok-ink:#8DD6A6;
+  --bad-bg:#3A1513; --bad-ink:#F1A29C; --info-bg:#1A2737; --info-ink:#A8C5E6; color-scheme:dark}}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.4 var(--f-body)}
+.wrap{max-width:760px;margin:0 auto;padding:env(safe-area-inset-top,0px) 16px 130px}
+button,input,textarea,select{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:3px solid var(--tape);outline-offset:2px}
+[hidden]{display:none!important}
+.top{position:sticky;top:0;z-index:5;background:var(--bg);display:flex;align-items:center;gap:10px;padding-block:10px;border-bottom:1px solid var(--line)}
+.brand{font:700 22px/1 var(--f-display);letter-spacing:.02em;text-transform:uppercase;flex:1;min-width:0}
+.brand span{color:var(--muted);font-weight:600}
+.today{font:600 15px/1 var(--f-display);letter-spacing:.06em;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:7px 10px}
+.gear{border:1px solid var(--line);background:var(--card);border-radius:6px;padding:6px 10px;font-weight:600}
+.notice{margin-top:12px;padding:10px 12px;border-radius:8px;background:var(--info-bg);color:var(--info-ink);font-size:15px}
+.notice.bad{background:var(--bad-bg);color:var(--bad-ink)}
+.notice button{margin-left:8px;border:0;background:none;text-decoration:underline;color:inherit;padding:0}
+.start{margin-top:14px;display:grid;grid-template-columns:2fr 1fr;gap:10px}
+.shot{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;min-height:120px;border-radius:12px;border:2px solid var(--ink);background:var(--card);text-align:center;padding:10px;cursor:pointer}
+.shot.lab{background:var(--tape);color:var(--tape-ink);border-color:var(--tape)}
+.shot .big{font:700 34px/1 var(--f-display);letter-spacing:.05em}
+.shot .small{font-size:13px;opacity:.85}
+.pending{margin-top:12px;padding:12px;border:2px dashed var(--tape);border-radius:10px;display:flex;flex-direction:column;gap:10px}
+.pending-head{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:17px}
+.prog{margin-top:12px;padding:10px 12px;border-radius:8px;background:var(--info-bg);color:var(--info-ink);font-size:15px}
+.thumbs{display:flex;flex-wrap:wrap;gap:6px}
+.thumb{position:relative;width:60px;height:60px;border-radius:6px;overflow:hidden;border:1px solid var(--line);background:var(--line2);padding:0}
+.thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.thumb .tag{position:absolute;left:0;bottom:0;font:700 11px/1 var(--f-display);letter-spacing:.05em;padding:3px 5px;background:var(--ink);color:var(--card)}
+.thumb .tag.lab{background:var(--tape);color:var(--tape-ink)}
+.thumb .tag.cut{background:var(--kraft);color:var(--kraft-ink)}
+.btn{border:1px solid var(--line);background:var(--card);border-radius:8px;padding:10px 14px;font-weight:600}
+.btn.primary{background:var(--ink);color:var(--card);border-color:var(--ink)}
+.btn.tape{background:var(--tape);color:var(--tape-ink);border-color:var(--tape)}
+.btn.small{padding:6px 10px;font-size:14px}
+.btn.danger{color:var(--bad-ink);border-color:var(--bad-ink);background:transparent}
+.btn[disabled]{opacity:.5;cursor:default}
+.row-actions{display:flex;gap:8px;flex-wrap:wrap}
+.list-head{display:flex;align-items:center;gap:10px;margin-top:22px;flex-wrap:wrap}
+.list-head h2{font:700 20px/1 var(--f-display);text-transform:uppercase;letter-spacing:.05em;margin:0;flex:1}
+.list-head select{border:1px solid var(--line);border-radius:6px;background:var(--card);padding:6px 8px}
+.stats{font-size:14px;color:var(--muted);width:100%}
+.empty{margin-top:12px;padding:18px;border:1px dashed var(--line);border-radius:10px;color:var(--muted);text-align:center}
+.boxes{display:flex;flex-direction:column;gap:10px;margin-top:10px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.card-top{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;padding:10px 12px;width:100%;text-align:left;border:0;background:none}
+.no{font:700 22px/1 var(--f-display);background:var(--kraft);color:var(--kraft-ink);border-radius:6px;padding:5px 8px;min-width:44px;text-align:center}
+.who{min-width:0}
+.who b{display:block;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.who span{display:block;font-size:14px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:var(--f-mono)}
+.st{font:700 13px/1 var(--f-display);letter-spacing:.06em;text-transform:uppercase;padding:6px 8px;border-radius:5px;white-space:nowrap}
+.st.ready{background:var(--ok-bg);color:var(--ok-ink)}
+.st.sent{background:var(--ink);color:var(--card)}
+.st.check,.st.dirty{background:var(--flag-bg);color:var(--flag-ink)}
+.st.error{background:var(--bad-bg);color:var(--bad-ink)}
+.st.reading,.st.queued,.st.unread{background:var(--info-bg);color:var(--info-ink)}
+.chips{display:flex;flex-wrap:wrap;gap:5px;padding:0 12px 10px}
+.chip{font-size:12px;font-weight:600;padding:3px 7px;border-radius:5px;background:var(--line2);color:var(--muted)}
+.chip.flag{background:var(--flag-bg);color:var(--flag-ink)}
+.chip.bad{background:var(--bad-bg);color:var(--bad-ink)}
+.detail{border-top:1px solid var(--line2);padding:12px;display:flex;flex-direction:column;gap:12px}
+.proof{display:grid;grid-template-columns:minmax(0,1fr);gap:12px}
+@media (min-width:620px){.proof{grid-template-columns:200px minmax(0,1fr)}}
+.proof .thumb{width:92px;height:92px}
+.fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px 10px}
+.f{display:flex;flex-direction:column;gap:3px;min-width:0}
+.f.wide{grid-column:1/-1}
+.f label{font:700 12px/1 var(--f-display);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.f input,.f textarea{width:100%;border:1px solid var(--line);border-radius:6px;background:var(--bg);padding:8px 10px;text-transform:uppercase}
+.f input.trk{font-family:var(--f-mono)}
+.f textarea{min-height:92px;resize:vertical;font-size:15px;line-height:1.45}
+.inv{border:0;border-radius:6px;padding:9px 10px;font-weight:700}
+.inv.no{background:var(--bad-bg);color:var(--bad-ink)}
+.inv.yes{background:var(--ok-bg);color:var(--ok-ink)}
+.lines{display:flex;flex-direction:column;gap:6px}
+.line{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;font-size:14px;border-top:1px dashed var(--line2);padding-top:6px}
+.line .thumb{width:44px;height:44px}
+.reasons{background:var(--flag-bg);color:var(--flag-ink);border-radius:8px;padding:8px 10px;font-size:14px}
+.reasons ul{margin:4px 0 0;padding-left:18px}
+.err{background:var(--bad-bg);color:var(--bad-ink);border-radius:8px;padding:8px 10px;font-size:14px}
+.confirm{background:var(--bad-bg);color:var(--bad-ink);border-radius:8px;padding:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.muted{color:var(--muted);font-size:14px}
+.bar{position:fixed;left:0;right:0;bottom:0;z-index:6;background:var(--card);border-top:1px solid var(--line);padding:10px 16px calc(10px + env(safe-area-inset-bottom,0px))}
+.bar-in{max-width:760px;margin:0 auto;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.bar .btn.primary{flex:1;min-width:180px;padding:13px 14px;font-size:17px}
+.plan{max-width:760px;margin:0 auto 8px;background:var(--flag-bg);color:var(--flag-ink);border-radius:8px;padding:10px;font-size:14px}
+.barmsg{font-size:14px;color:var(--muted)}
+.textcopy{width:100%;min-height:80px;font-family:var(--f-mono);font-size:12px;margin-top:8px}
+/* settings */
+.sheet{position:fixed;inset:0;z-index:30;background:var(--bg);overflow:auto}
+.sheet-in{max-width:620px;margin:0 auto;padding:calc(16px + env(safe-area-inset-top,0px)) 16px 40px;display:flex;flex-direction:column;gap:14px}
+.sheet h1{font:700 26px/1.1 var(--f-display);text-transform:uppercase;margin:0}
+.sheet label{display:flex;flex-direction:column;gap:4px;font-weight:600}
+.sheet input[type=text],.sheet input[type=password],.sheet input[type=url]{border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:var(--card)}
+.sheet .check{flex-direction:row;align-items:center;gap:8px;font-weight:500}
+/* camera */
+.cam{position:fixed;inset:0;z-index:40;background:#000;display:flex;flex-direction:column;color:#fff;touch-action:manipulation;user-select:none;-webkit-user-select:none}
+.cam video{flex:1;min-height:0;width:100%;object-fit:cover;background:#000}
+.cam-top{position:absolute;left:0;right:0;top:0;display:flex;justify-content:space-between;align-items:center;gap:8px;padding:calc(10px + env(safe-area-inset-top,0px)) 12px 10px;background:linear-gradient(rgba(0,0,0,.55),rgba(0,0,0,0))}
+.cam-top button{background:rgba(255,255,255,.18);color:#fff;border:0;border-radius:20px;padding:8px 14px;font-weight:700}
+.cam-top button.on{background:var(--tape);color:var(--tape-ink)}
+.cam-count{font:700 22px/1 var(--f-display);letter-spacing:.04em}
+.cam-box{font:700 15px/1 var(--f-display);letter-spacing:.06em;background:var(--kraft);color:var(--kraft-ink);border-radius:6px;padding:5px 8px}
+.cam-strip{display:flex;gap:6px;overflow-x:auto;padding:8px 12px;background:#000;min-height:66px}
+.cam-strip .thumb{flex:0 0 auto;width:50px;height:50px;border-color:#333}
+.cam-bottom{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px;padding:10px 16px calc(14px + env(safe-area-inset-bottom,0px));background:#000}
+.cam-bottom .side{border:2px solid #fff;background:transparent;color:#fff;border-radius:10px;padding:12px 10px;font:700 17px/1 var(--f-display);letter-spacing:.05em}
+.cam-bottom .side.done{background:var(--tape);color:var(--tape-ink);border-color:var(--tape)}
+.shutter{width:84px;height:84px;border-radius:50%;border:6px solid #fff;background:rgba(255,255,255,.25)}
+.shutter:active{background:#fff}
+.flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none;transition:opacity .18s}
+.flash.go{opacity:.55;transition:none}
+.cam-msg{position:absolute;left:12px;right:12px;top:40%;text-align:center;font-size:17px}
+.lb{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.9);display:flex;flex-direction:column}
+.lb-bar{display:flex;justify-content:space-between;align-items:center;padding:calc(10px + env(safe-area-inset-top,0px)) 16px 10px;color:#fff;font-size:14px}
+.lb-bar button,.lb-tools button{background:#fff;color:#111;border:0;border-radius:6px;padding:8px 12px;font-weight:700}
+.lb-scroll{flex:1;overflow:auto;display:flex;align-items:flex-start;justify-content:center}
+.lb-scroll img{max-width:100%}
+.lb-scroll.zoom img{max-width:none;width:240%}
+.lb-tools{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 16px calc(10px + env(safe-area-inset-bottom,0px));color:#fff;font-size:14px}
+.lb-tools select{border-radius:6px;padding:8px;background:#fff;color:#111;border:0;max-width:100%}
+.lb-tools button.warn{background:#F8DCDA;color:#8A1C17}
+@media (prefers-reduced-motion:reduce){.flash{transition:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">700 Islands <span>Intake</span></div>
+    <div class="today" id="todayChip">—</div>
+    <button class="gear" id="gearBtn" type="button" aria-label="Settings">Settings</button>
+  </header>
+  <div id="notice" class="notice" hidden></div>
+
+  <section class="start">
+    <button class="shot lab" id="camBtn" type="button"><span class="big">CAMERA</span><span class="small">this box: label + contents, any order</span></button>
+    <label class="shot" for="pickAll"><span class="big">PHOTOS</span><span class="small">from the gallery</span></label>
+  </section>
+  <div id="curBar" class="pending" hidden>
+    <div class="pending-head"><b id="curText">Box #1</b><button class="btn primary" id="curFinish" type="button">Finish this box →</button></div>
+    <div class="thumbs" id="curThumbs"></div>
+  </div>
+  <div id="pending" class="pending" hidden>
+    <div class="pending-head"><b id="pendCount">0 photos waiting</b><button class="btn small" id="pendClear" type="button">Clear</button></div>
+    <div class="thumbs" id="pendThumbs"></div>
+    <button class="btn primary" id="pendSort" type="button">SORT INTO BOXES &amp; READ</button>
+    <div class="confirm" id="pendConfirm" hidden><span>Delete these photos?</span><button class="btn small danger" id="pendClearYes" type="button">Delete</button><button class="btn small" id="pendClearNo" type="button">Keep</button></div>
+  </div>
+  <div id="prog" class="prog" hidden></div>
+
+  <div class="list-head">
+    <h2 id="listTitle">Today</h2>
+    <select id="daySel" aria-label="Day"></select>
+    <div class="stats" id="dayStats"></div>
+  </div>
+  <div class="boxes" id="boxes"></div>
+  <div class="empty" id="emptyList">No boxes yet. Tap <b>CAMERA</b> and shoot: a box's shipping label, then what's inside it, then the next label.</div>
+</div>
+
+<div class="bar">
+  <div class="plan" id="plan" hidden></div>
+  <div class="bar-in">
+    <button class="btn primary" id="sendBtn" type="button" disabled>Send to sheet</button>
+    <button class="btn" id="copyBtn" type="button">Copy rows</button>
+    <span class="barmsg" id="barMsg"></span>
+  </div>
+  <textarea class="textcopy" id="copyFallback" hidden readonly></textarea>
+</div>
+
+<!-- settings -->
+<div class="sheet" id="settings" hidden>
+  <div class="sheet-in">
+    <h1>Settings</h1>
+    <p class="muted">Paste these once from the backend setup (see SETUP.md). They stay on this phone.</p>
+    <label>Backend address<input type="url" id="setUrl" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off"></label>
+    <label>Access code<input type="password" id="setToken" placeholder="the INTAKE_TOKEN you chose" autocomplete="off"></label>
+    <div class="row-actions"><button class="btn primary" id="setSave" type="button">Save and test</button><button class="btn" id="setClose" type="button">Close</button></div>
+    <div id="setStatus" class="muted"></div>
+    <label class="check"><input type="checkbox" id="setSharp"> Sharper photos (slower shutter; use if labels read badly)</label>
+    <label class="check"><input type="checkbox" id="setAutoSort"> Sort and read as soon as I tap DONE in the camera</label>
+    <div class="muted" id="storeInfo"></div>
+    <button class="btn danger" id="purgeBtn" type="button">Delete photos of boxes already in the sheet (older than 7 days)</button>
+  </div>
+</div>
+
+<!-- camera -->
+<div class="cam" id="cam" hidden>
+  <video id="video" playsinline muted autoplay></video>
+  <div class="flash" id="flash"></div>
+  <div class="cam-msg" id="camMsg" hidden></div>
+  <div class="cam-top">
+    <button type="button" id="camClose">Close</button>
+    <span class="cam-count" id="camCount">0</span>
+    <span class="cam-box" id="camBox">BOX 1</span>
+    <button type="button" id="torchBtn" hidden>Light</button>
+  </div>
+  <div class="cam-strip" id="camStrip"></div>
+  <div class="cam-bottom">
+    <button type="button" class="side" id="newBoxBtn">NEXT BOX</button>
+    <button type="button" class="shutter" id="shutter" aria-label="Take photo"></button>
+    <button type="button" class="side done" id="camDone">DONE</button>
+  </div>
+</div>
+
+<div class="lb" id="lb" hidden>
+  <div class="lb-bar"><span id="lbCap">Tap the photo to zoom</span><button type="button" id="lbClose">Close</button></div>
+  <div class="lb-scroll" id="lbScroll"><img id="lbImg" alt="Photo"></div>
+  <div class="lb-tools" id="lbTools">
+    <span>Move to</span><select id="lbMove" aria-label="Move this photo to box"></select><button type="button" id="lbMoveBtn">Move</button>
+    <button type="button" id="lbKind">Make it inside</button>
+    <button type="button" id="lbDel" class="warn">Remove photo</button>
+  </div>
+</div>
+
+<input type="file" id="pickAll" accept="image/*" multiple hidden>
+
+<script>
+(function () {
+'use strict';
+
+/* ================= rules Claude reads (mirror of the project's CLAUDE.md) ================= */
+const RULES = `LABEL RULES (one row per box)
+- customer: consignee name in CAPS, copied EXACTLY as printed on THIS label. Business ship-to -> the business name. If the label carries any name other than 700 Islands, use that name only (drop "C/O 700 ISLANDS", "700 ISLAND CARGO" and the like). Only "700 Islands" plus a c/o name -> the c/o name. No name -> "NO NAME ON LABEL". Part unreadable -> the legible part + " — FIRST NAME UNREADABLE" and a flag.
+- tracking: one string, no spaces. UPS 1Z = 18 characters. FedEx = 12 digits (drop a 96/9622 prefix of the long barcode string). USPS = the full 22-digit tracking line. Amazon TBA, GOFO GFUS, Yanwen YWE, Target TLMD, OnTrac, Veho, Better Trucks: exactly as printed. An Amazon order shipped by UPS/FedEx/USPS -> the carrier number, not a TBA. No carrier tracking (freight, vendor truck) -> "DELIVERED BY <CARRIER OR VENDOR> (<PRO / BOL / REF NUMBER>)". Tracking cut off or covered -> "NOT IN FRAME — RESHOOT" and a flag. Never guess a digit: give your best reading and add the flag "VERIFY DIGITS — <which part>".
+- weight_printed / weight_unit: the package weight exactly as printed (number only) and its unit ("lb" or "kg"). FedEx: actual weight (ACTWGT), not dim weight. No weight printed -> "" and the flag "NO WEIGHT ON LABEL — WEIGH IT". A handwritten weight counts but flag it.
+- shipper: "NAME, STREET, CITY, ST ZIP" in CAPS from the ship-from block. Anything shipped by Amazon (TBA labels, Amazon orders via USPS/UPS, Amazon fulfillment-center senders) -> just "AMAZON". Shipper block cut off -> "NOT SHOWN — SHIPPER BLOCK CUT OFF".
+- invoice: true only when a commercial invoice or a PRICED packing slip/receipt is in the photos. An "INV#" printed on the label is not an invoice; a slip without prices is not an invoice.
+- 4692 NW 133RD ST and 4660 NW 133RD ST (Opa Locka FL 33054) are both our addresses — never a problem.
+- Every box is its own entity: read everything fresh from these photos only.
+
+CONTENTS RULES (what was inside)
+- One entry per distinct item: "BRAND ITEM" in CAPS, short, no marketing text, NO SKU / model / FNSKU codes. Clothing: the type of clothing only.
+- Packs: items wrapped together in plastic, or sold as one case -> "BRAND ITEM N PACK", and qty = number of packs.
+- Counting: every inside photo is its own unit — two photos of the same product = qty 2, unless one photo is plainly a close-up of a unit already shown. When a packing slip or invoice lists quantities, the slip wins.
+- Order: the packing slip's order when there is one, otherwise photo order.
+- Product names printed on the outside carton may prefill contents only when there are no inside photos (add the flag "CONTENTS FROM CARTON PRINT").
+
+FLAGS (short CAPS phrases for the operator)
+- Hazmat: "LITHIUM BATTERIES — FORBIDDEN ON PASSENGER AIRCRAFT", "DRY ICE UN1845", "LIMITED QUANTITY", "AEROSOL", "FLAMMABLE", "LIQUID".
+- "PERISHABLE — GET IT COLD" for food, frozen, refrigerated or dry-ice boxes.
+- Multi-piece: "PIECE 1 OF 2".
+- Anything unreadable, faint, scuffed, torn or covered — say what.
+- "HEAVY — TEAM LIFT" (50 lb and over), "FRAGILE", "OVERSIZE", "THIS END UP".
+- "CARTON SAYS: <PRODUCT>" when the carton print names the product.
+- A label date more than a week away from today.
+- Contents doubts: "COUNT UNSURE — <ITEM>".
+BADGES: short CAPS chips — carrier and service, which address (4692 or 4660), REF / PO numbers, "1 OF 2", dimensions.`;
+
+const CLASSIFY = n => `These ${n} photos are all of ONE package at a package warehouse, in any order: its shipping label and what was inside it.
+For each image decide:
+- "label": the box's SHIPPING LABEL — a carrier or shipping label with an address and a tracking number or barcode (UPS, FedEx, USPS, Amazon, DHL, OnTrac, freight / delivery labels). A photo of a whole box where its shipping label is clearly readable also counts.
+- "inside": anything else — an item, a product box, a packing slip, an invoice or receipt, carton print, a product or FNSKU sticker, a handwritten note.
+For a label also give the last 4 characters of its main tracking number if you can read them, else "".
+Reply with ONLY a JSON array with one entry per image, in order: [{"n":1,"kind":"label","trk4":"2658"},{"n":2,"kind":"inside","trk4":""}]`;
+
+function mainPrompt(nL, nI, note, today) {
+  const p = [`Read these ${nL + nI} photos of ONE package received at the 700 Islands warehouse (Opa Locka, FL; forwards to the Bahamas). Today is ${today}.`];
+  p.push(nL ? `Images 1–${nL} show the OUTSIDE of the box: shipping label(s) and carton print.` : 'There is no label photo for this box: leave the label fields empty.');
+  p.push(nI ? `Images ${nL + 1}–${nL + nI} show what was INSIDE the box: items, packing slips, invoices.` : 'There are no inside photos.');
+  if (note) p.push(`The operator's note (trust it over the photos when they conflict): "${note}"`);
+  p.push(RULES);
+  p.push(`Reply with ONLY one JSON object, exactly these keys:
+{"customer":"","tracking":"","weight_printed":"","weight_unit":"lb","shipper":"","invoice":false,"label_photo":1,"label_box":[0,0,1,1],"contents":[{"item":"","qty":1,"photos":[]}],"flags":[],"badges":[]}
+- label_photo: the image number with the clearest view of the main shipping label; label_box: that label's bounding box as fractions [left, top, right, bottom] of that image. Use null for both when there is no label.
+- contents[].item without the count; contents[].qty a number; contents[].photos the image numbers the item appears in. contents may be [].`);
+  return p.join('\n\n');
+}
+const itemsPrompt = (n, note) => `These ${n} photos show more of what was INSIDE one package at the 700 Islands warehouse.` +
+  (note ? `\n\nThe operator's note: "${note}"` : '') + '\n\n' + RULES +
+  `\n\nReply with ONLY one JSON object: {"contents":[{"item":"","qty":1,"photos":[]}],"flags":[]} — photos are the image numbers (1–${n}) the item appears in.`;
+const VERIFY_PROMPT = `This is a close-up crop of one shipping label. Read it independently and carefully.
+Return ONLY JSON: {"tracking":"","weight_printed":"","weight_unit":"lb","sure":true}
+- tracking: the main tracking number, no spaces. UPS 1Z = 18 characters; FedEx = 12 digits (drop a 96/9622 prefix of the long barcode string); USPS = the 22-digit tracking line; Amazon TBA and other codes exactly as printed. Put ? in place of any character you cannot read.
+- weight_printed: the package weight as printed (number only) and weight_unit "lb" or "kg"; "" when none.
+- sure: false if any character was hard to read.`;
+
+/* ================= helpers ================= */
+const MON = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+const $ = s => document.querySelector(s);
+const pad = n => String(n).padStart(2, '0');
+const dayKeyOf = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const TODAY = () => dayKeyOf(new Date());
+const capsDate = k => { const [y, m, d] = k.split('-'); return `${d} ${MON[+m - 1]} ${y}`; };
+const caps = s => String(s ?? '').replace(/\s+/g, ' ').trim().toUpperCase();
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const alnum = s => caps(s).replace(/[^A-Z0-9]/g, '');
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+const ls = { get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} } };
+function normTrack(t) { t = caps(t); return /^(DELIVERED BY|PICK ?UP BY|NOT IN FRAME)/.test(t) ? t : t.replace(/[\s-]/g, ''); }
+function roundWeight(v, unit) {
+  const n = parseFloat(String(v ?? '').replace(',', '.').replace(/[^0-9.]/g, ''));
+  if (!isFinite(n)) return '';
+  return String(Math.floor((/kg/i.test(unit || '') ? n * 2.2046 : n) + 0.5));
+}
+const normShipper = s => { s = caps(s); return /^(AMAZON|AMZN)\b|AMAZON\.COM/.test(s) ? 'AMAZON' : s; };
+const contentsLine = c => `${caps(c.item).replace(/\s*\(\d+\s*TOTAL\)\s*$/, '')} (${Math.max(1, parseInt(c.qty, 10) || 1)} TOTAL)`;
+function parseJson(text) {
+  const t = String(text || '').trim();
+  try { return JSON.parse(t); } catch (e) {}
+  const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fence) { try { return JSON.parse(fence[1]); } catch (e) {} }
+  const a = Math.min(...['{', '['].map(c => t.indexOf(c)).filter(i => i >= 0));
+  const b = Math.max(t.lastIndexOf('}'), t.lastIndexOf(']'));
+  if (isFinite(a) && b > a) { try { return JSON.parse(t.slice(a, b + 1)); } catch (e) {} }
+  throw new Error('Claude answered in the wrong format. Tap Read again.');
+}
+
+/* ================= storage (IndexedDB: photos + boxes live on this phone) ================= */
+let IDB;
+function idb() {
+  if (IDB) return IDB;
+  IDB = new Promise((res, rej) => {
+    const r = indexedDB.open('intake', 1);
+    r.onupgradeneeded = () => { const d = r.result; d.createObjectStore('photos', { keyPath: 'id' }); d.createObjectStore('boxes', { keyPath: 'id' }); };
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+  return IDB;
+}
+async function tx(store, mode, fn) {
+  const d = await idb();
+  return new Promise((res, rej) => {
+    const t = d.transaction(store, mode), s = t.objectStore(store);
+    let out;
+    Promise.resolve(fn(s)).then(v => { out = v; });
+    t.oncomplete = () => res(out);
+    t.onerror = () => rej(t.error);
+    t.onabort = () => rej(t.error);
+  });
+}
+const reqP = r => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+const putPhoto = p => tx('photos', 'readwrite', s => { s.put(p); });
+const delPhoto = id => tx('photos', 'readwrite', s => { s.delete(id); });
+const allPhotosMeta = () => tx('photos', 'readonly', s => reqP(s.getAll()));
+const putBox = b => tx('boxes', 'readwrite', s => { s.put(b); });
+const delBoxDb = id => tx('boxes', 'readwrite', s => { s.delete(id); });
+const allBoxesDb = () => tx('boxes', 'readonly', s => reqP(s.getAll()));
+
+/* ================= state ================= */
+const S = {
+  boxes: new Map(), photos: new Map(), urls: new Map(), day: TODAY(), expanded: new Set(), confirmDel: null,
+  readQ: [], reading: null, watch: null, plan: null, busy: false, lb: null,
+  cfg: { url: ls.get('backendUrl') || '', token: ls.get('backendToken') || '' },
+  sharp: ls.get('sharp') === '1', autoSort: ls.get('autoSort') !== '0'
+};
+const photoUrl = id => {
+  if (S.urls.has(id)) return S.urls.get(id);
+  const p = S.photos.get(id);
+  if (!p || !p.blob) return '';
+  const u = URL.createObjectURL(p.blob); S.urls.set(id, u); return u;
+};
+const allBoxes = () => [...S.boxes.values()];
+const pendingPhotos = () => [...S.photos.values()].filter(p => !p.box).sort((a, b) => a.t - b.t);
+
+async function saveBox(b) { b.updatedAt = Date.now(); S.boxes.set(b.id, b); await putBox(b); render(); }
+async function patchBox(id, fn) { const b = S.boxes.get(id); if (!b) return; fn(b); await saveBox(b); }
+
+/* ================= backend ================= */
+async function api(op, payload) {
+  if (!S.cfg.url || !S.cfg.token) throw new Error('Set up the backend first: Settings → backend address and access code.');
+  let r;
+  try {
+    r = await fetch(S.cfg.url, { method: 'POST', redirect: 'follow', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(Object.assign({ op, token: S.cfg.token }, payload || {})) });
+  } catch (e) { throw new Error('No connection to the backend. Check your signal and try again.'); }
+  let j;
+  try { j = await r.json(); } catch (e) { throw new Error('The backend address doesn’t look right (Settings).'); }
+  if (j.error) throw new Error(j.error);
+  return j;
+}
+async function claude(prompt, blobs, effort, careful) {
+  const images = await Promise.all(blobs.map(b => toApiB64(b)));
+  const j = await api('claude', { prompt, images, effort: effort || 'low', careful: !!careful });
+  return parseJson(j.text);
+}
+
+/* No barcode scanning (operator's choice, 08 OCT 2026): Claude sorts and reads every photo.
+   These stubs keep the old call sites working; they never find a code. */
+async function scanCodes() { return null; }
+function codeSummary() { return { tracking: '', label: false, raw: [] }; }
+
+/* ================= images ================= */
+async function bitmap(blob) { return createImageBitmap(blob, { imageOrientation: 'from-image' }); }
+async function scaleTo(blob, max, q) {
+  const bmp = await bitmap(blob);
+  const s = Math.min(1, max / Math.max(bmp.width, bmp.height));
+  const w = Math.round(bmp.width * s), h = Math.round(bmp.height * s);
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  c.getContext('2d').drawImage(bmp, 0, 0, w, h);
+  if (bmp.close) bmp.close();
+  return new Promise((res, rej) => c.toBlob(b => b ? res({ blob: b, w, h }) : rej(new Error('Could not save the photo.')), 'image/jpeg', q || 0.88));
+}
+async function toApiB64(blob) {
+  const { blob: small } = await scaleTo(blob, 1568, 0.86);           // Claude's sweet spot for image size
+  const buf = new Uint8Array(await small.arrayBuffer());
+  let s = ''; for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+async function cropBlob(blob, box) {
+  const bmp = await bitmap(blob);
+  let [x0, y0, x1, y1] = box.map(Number);
+  x0 = Math.max(0, x0 - 0.05); y0 = Math.max(0, y0 - 0.05); x1 = Math.min(1, x1 + 0.05); y1 = Math.min(1, y1 + 0.05);
+  const sx = Math.floor(x0 * bmp.width), sy = Math.floor(y0 * bmp.height);
+  const sw = Math.max(32, Math.floor((x1 - x0) * bmp.width)), sh = Math.max(32, Math.floor((y1 - y0) * bmp.height));
+  const c = document.createElement('canvas'); c.width = sw; c.height = sh;
+  c.getContext('2d').drawImage(bmp, sx, sy, sw, sh, 0, 0, sw, sh);
+  if (bmp.close) bmp.close();
+  return new Promise((res, rej) => c.toBlob(b => b ? res(b) : rej(new Error('crop')), 'image/jpeg', 0.92));
+}
+async function shotTime(file) {
+  try {
+    const v = new DataView(await file.slice(0, 196608).arrayBuffer());
+    if (v.getUint16(0) !== 0xFFD8) return null;
+    let o = 2;
+    while (o + 10 < v.byteLength) {
+      const m = v.getUint16(o), len = v.getUint16(o + 2);
+      if ((m & 0xFF00) !== 0xFF00) break;
+      if (m === 0xFFE1 && v.getUint32(o + 4) === 0x45786966) {
+        const t = o + 10, le = v.getUint16(t) === 0x4949;
+        const u16 = p => v.getUint16(t + p, le), u32 = p => v.getUint32(t + p, le);
+        const ifd = off => { const n = u16(off), r = {}; for (let i = 0; i < n; i++) { const e = off + 2 + i * 12; r[u16(e)] = { count: u32(e + 4), val: e + 8 }; } return r; };
+        const ex = ifd(u32(4))[0x8769]; if (!ex) return null;
+        const exif = ifd(u32(ex.val)), d = exif[0x9003] || exif[0x9004]; if (!d) return null;
+        const so = d.count > 4 ? u32(d.val) : d.val;
+        let s = ''; for (let i = 0; i < 19; i++) s += String.fromCharCode(v.getUint8(t + so + i));
+        const mm = s.match(/(\d{4}):(\d\d):(\d\d) (\d\d):(\d\d):(\d\d)/); if (!mm) return null;
+        return new Date(+mm[1], +mm[2] - 1, +mm[3], +mm[4], +mm[5], +mm[6]).getTime();
+      }
+      o += 2 + len;
+    }
+  } catch (e) {}
+  return null;
+}
+
+/* ================= camera ================= */
+const CAM = { stream: null, track: null, ic: null, torch: false, split: false, n: 0, queue: Promise.resolve(), target: null, boxNo: 1 };
+async function openCamera(targetBoxId) {
+  CAM.target = targetBoxId || null; CAM.split = false; CAM.n = 0;
+  CAM.boxNo = 1;
+  $('#cam').hidden = false; $('#camStrip').innerHTML = ''; $('#camCount').textContent = '0';
+  $('#camBox').textContent = targetBoxId ? `BOX #${S.boxes.get(targetBoxId)?.seq || ''}` : 'BOX 1';
+  $('#newBoxBtn').hidden = !!targetBoxId;
+  const msg = $('#camMsg'); msg.hidden = false; msg.textContent = 'Starting camera…';
+  try {
+    CAM.stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 3840 }, height: { ideal: 2160 } } });
+    const v = $('#video'); v.srcObject = CAM.stream; await v.play();
+    CAM.track = CAM.stream.getVideoTracks()[0];
+    const caps = CAM.track.getCapabilities ? CAM.track.getCapabilities() : {};
+    $('#torchBtn').hidden = !caps.torch;
+    CAM.ic = ('ImageCapture' in window) ? new ImageCapture(CAM.track) : null;
+    msg.hidden = true;
+    try { CAM.wake = await navigator.wakeLock?.request('screen'); } catch (e) {}
+  } catch (e) {
+    msg.textContent = e && e.name === 'NotAllowedError'
+      ? 'Camera blocked. Allow the camera for this app in Chrome (lock icon → Permissions), then try again.'
+      : 'The camera couldn’t start. Close other camera apps and try again.';
+  }
+}
+function closeCamera() {
+  if (CAM.stream) CAM.stream.getTracks().forEach(t => t.stop());
+  CAM.stream = null; CAM.track = null; CAM.ic = null; CAM.torch = false;
+  $('#torchBtn').classList.remove('on');
+  try { CAM.wake && CAM.wake.release(); } catch (e) {}
+  $('#cam').hidden = true;
+}
+async function grab() {
+  if (S.sharp && CAM.ic) { try { return await CAM.ic.takePhoto(); } catch (e) {} }
+  const v = $('#video');
+  if (!v.videoWidth) throw new Error('no frame');
+  const c = document.createElement('canvas'); c.width = v.videoWidth; c.height = v.videoHeight;
+  c.getContext('2d').drawImage(v, 0, 0);
+  return new Promise((res, rej) => c.toBlob(b => b ? res(b) : rej(new Error('frame')), 'image/jpeg', 0.92));
+}
+function shoot() {
+  if (!CAM.stream) return;
+  const t = Date.now(), split = CAM.split; CAM.split = false;
+  const f = $('#flash'); f.classList.add('go'); requestAnimationFrame(() => requestAnimationFrame(() => f.classList.remove('go')));
+  try { navigator.vibrate && navigator.vibrate(20); } catch (e) {}
+  CAM.n++; $('#camCount').textContent = String(CAM.n);
+  const slot = document.createElement('span'); slot.className = 'thumb'; $('#camStrip').append(slot); slot.scrollIntoView({ inline: 'end' });
+  const raw = grab();                                   // grab this frame now; store it in the background
+  CAM.queue = CAM.queue.then(async () => {
+    try {
+      const { blob, w, h } = await scaleTo(await raw, 2400, 0.9);
+      const p = { id: uid(), t, blob, w, h, split, box: CAM.target || null, kind: null, src: 'camera' };
+      const s = codeSummary(await scanCodes(blob));          // label barcode → known label, exact tracking
+      p.codes = s.raw; p.trk = s.tracking; if (s.label) p.kind = 'label';
+      await putPhoto(p); S.photos.set(p.id, p);
+      slot.innerHTML = `<img src="${esc(photoUrl(p.id))}" alt="">` + (s.label ? '<span class="tag lab">L</span>' : '') + (split ? '<span class="tag cut">NEW</span>' : '');
+      await attachToBox(CAM.target || await currentBox(), [p]);
+      camBoxLabel();
+    } catch (e) { slot.remove(); CAM.n--; $('#camCount').textContent = String(CAM.n); }
+  });
+}
+/* ONE BOX AT A TIME: every photo goes into the current box, label and contents in any order.
+   Only NEXT BOX (camera) or "Finish this box" starts the next one. */
+S.current = ls.get('curBox') || null;
+async function currentBox() {
+  let b = S.current && S.boxes.get(S.current);
+  if (!b || b.sheetRow || b.day !== TODAY()) { b = await newBox(); S.current = b.id; ls.set('curBox', b.id); }
+  return b.id;
+}
+function finishCurrent() {
+  const b = S.current && S.boxes.get(S.current);
+  if (b && b.photos.length && !b.sheetRow) queueRead(b.id);
+  S.current = null; ls.set('curBox', '');
+  render(); camBoxLabel();
+}
+function camBoxLabel() {
+  const b = CAM.target ? S.boxes.get(CAM.target) : (S.current && S.boxes.get(S.current));
+  const nextSeq = 1 + Math.max(0, ...allBoxes().filter(x => x.day === TODAY()).map(x => x.seq || 0));
+  $('#camBox').textContent = 'BOX #' + (b ? b.seq : nextSeq);
+}
+$('#camBtn').addEventListener('click', () => { openCamera(null); camBoxLabel(); });
+$('#shutter').addEventListener('click', shoot);
+$('#video').addEventListener('click', shoot);
+$('#newBoxBtn').addEventListener('click', async () => { await CAM.queue; finishCurrent(); });
+$('#torchBtn').addEventListener('click', async () => {
+  if (!CAM.track) return;
+  CAM.torch = !CAM.torch;
+  try { await CAM.track.applyConstraints({ advanced: [{ torch: CAM.torch }] }); $('#torchBtn').classList.toggle('on', CAM.torch); } catch (e) { CAM.torch = false; }
+});
+$('#camClose').addEventListener('click', async () => { await CAM.queue; closeCamera(); render(); });
+$('#camDone').addEventListener('click', async () => {
+  const target = CAM.target;
+  await CAM.queue; closeCamera(); render();
+  if (target) queueRead(target);
+  else finishCurrent();
+});
+document.addEventListener('keydown', e => { if (!$('#cam').hidden && (e.key === ' ' || e.key === 'Enter' || e.key === 'AudioVolumeUp' || e.key === 'AudioVolumeDown')) { e.preventDefault(); shoot(); } });
+
+/* ================= gallery import ================= */
+$('#pickAll').addEventListener('change', async e => {
+  const files = [...(e.target.files || [])]; e.target.value = '';
+  if (!files.length) return;
+  showProg(`Saving ${files.length} photo${files.length === 1 ? '' : 's'}…`);
+  const metas = await Promise.all(files.map(async (f, i) => ({ f, i, t: await shotTime(f) })));
+  const ordered = metas.every(m => m.t != null) ? [...metas].sort((a, b) => (a.t - b.t) || (a.i - b.i)) : metas;
+  const base = Date.now(), added = [];
+  for (let k = 0; k < ordered.length; k++) {
+    const m = ordered[k];
+    try {
+      const { blob, w, h } = await scaleTo(m.f, 2400, 0.9);
+      const p = { id: uid(), t: m.t || base + k, blob, w, h, split: false, box: null, kind: null, src: 'gallery' };
+      const s = codeSummary(await scanCodes(blob));
+      p.codes = s.raw; p.trk = s.tracking; if (s.label) p.kind = 'label';
+      await putPhoto(p); S.photos.set(p.id, p); added.push(p);
+    } catch (err) { notice(/hei[cf]/i.test(m.f.type + m.f.name) ? 'A HEIC photo was skipped. Set the camera to JPEG.' : 'One photo couldn’t be opened and was skipped.', true); }
+  }
+  if (added.length) await attachToBox(await currentBox(), added);   // all into THIS box
+  showProg(`${added.length} photo${added.length === 1 ? '' : 's'} added to box #${S.boxes.get(S.current)?.seq ?? ''}. Tap “Finish this box” when it’s complete.`);
+  render();
+});
+
+/* ================= sorting into boxes ================= */
+async function classify(blobs) {
+  const out = [];
+  for (let i = 0; i < blobs.length; i += 20) {
+    const chunk = blobs.slice(i, i + 20);
+    showProg(`Sorting photos ${i + 1}–${i + chunk.length} of ${blobs.length}…`);
+    const r = await claude(CLASSIFY(chunk.length), chunk, 'low');
+    const arr = Array.isArray(r) ? r : (r && (r.images || r.photos)) || [];
+    chunk.forEach((_, j) => {
+      const e = arr.find(x => x && +x.n === j + 1) || arr[j] || {};
+      out.push({ kind: /label/i.test(e.kind || '') ? 'label' : 'item', trk4: alnum(e.trk4 || '').slice(-4) });
+    });
+  }
+  return out;
+}
+async function newBox() {
+  const day = TODAY();
+  const seq = 1 + Math.max(0, ...allBoxes().filter(b => b.day === day).map(b => b.seq || 0));
+  const b = { id: uid(), day, seq, createdAt: Date.now(), photos: [], note: '', status: 'new', row: { customer: '', tracking: '', pieces: 1, weight: '', shipper: '', invoice: false, contents: '' },
+    proof: [], flags: [], badges: [], read: null, readError: '', edited: {}, ok: false, sheetRow: null, sentCells: null, trk4s: [] };
+  await saveBox(b);
+  return b;
+}
+async function attachToBox(boxId, photos) {
+  for (const p of photos) { p.box = boxId; await putPhoto(p); }
+  await patchBox(boxId, b => {
+    for (const p of photos) if (!b.photos.includes(p.id)) b.photos.push(p.id);
+    if (b.status !== 'sent') { b.status = 'new'; b.ok = false; }
+  });
+}
+let sorting = false;
+async function sortPending() {
+  if (sorting) return;
+  const list = pendingPhotos();
+  if (!list.length) return;
+  sorting = true; render();
+  try { await sortPhotos(list); }
+  catch (e) { showProg(''); notice(e.message, true); }
+  finally { sorting = false; render(); }
+}
+/** Sort photos (in shooting order) into boxes and queue each box for reading. */
+async function sortPhotos(list) {
+  list = list.filter(p => !p.box);
+  if (!list.length) return;
+  const t0 = performance.now();
+  for (const p of list) if (p.codes == null) { const s = codeSummary(await scanCodes(p.blob)); p.codes = s.raw; p.trk = s.tracking; if (s.label) p.kind = 'label'; }
+  const undecided = list.filter(p => p.kind !== 'label');
+  if (undecided.length) {
+    const kinds = await classify(undecided.map(p => p.blob));
+    undecided.forEach((p, i) => { p.kind = kinds[i].kind; p.trk4 = kinds[i].trk4; });
+  }
+  list.forEach(p => { if (p.trk) p.trk4 = p.trk.slice(-4); });
+  {
+    const groups = []; let g = null;
+    for (const p of list) {
+      if (p.split || !g) {
+        g = { photos: [], hasLabel: false, hasItems: false, trks: [] }; groups.push(g);
+      } else if (p.kind === 'label') {
+        const same = p.trk4 && g.trks.includes(p.trk4);
+        const relabel = g.hasLabel && !g.hasItems && (!p.trk4 || !g.trks.length);
+        const empty = !g.hasLabel && !g.hasItems;
+        if (!(same || relabel || empty)) { g = { photos: [], hasLabel: false, hasItems: false, trks: [] }; groups.push(g); }
+      }
+      if (p.kind === 'label') { g.hasLabel = true; if (p.trk4) g.trks.push(p.trk4); } else g.hasItems = true;
+      g.photos.push(p);
+    }
+    for (const grp of groups) {
+      const b = await newBox();
+      for (const p of grp.photos) { p.box = b.id; await putPhoto(p); }
+      await patchBox(b.id, x => { x.photos = grp.photos.map(p => p.id); x.trk4s = grp.trks; });
+      queueRead(b.id);
+    }
+    const noLabel = groups.filter(x => !x.hasLabel).length;
+    showProg(`${list.length} photo${list.length === 1 ? '' : 's'} → ${groups.length} box${groups.length === 1 ? '' : 'es'} in ${((performance.now() - t0) / 1000).toFixed(1)} s` + (noLabel ? ` (${noLabel} without a label — check ${noLabel === 1 ? 'it' : 'them'})` : '') + '. Reading…');
+  }
+  render();
+}
+
+/* ================= reading a box ================= */
+const PARALLEL = 1;                                   // one box at a time, in order (the operator's choice)
+S.active = new Set();
+function queueRead(id, opts) {
+  if (!S.readQ.some(j => j.id === id) && !S.active.has(id)) S.readQ.push({ id, opts: opts || {} });
+  patchBox(id, b => { if (b.status !== 'sent') b.status = 'queued'; b.readError = ''; });
+  pump();
+}
+function readProg() {
+  const n = S.active.size, w = S.readQ.length;
+  if (!n && !w) { if (!sorting) setTimeout(() => { if (!S.active.size && !S.readQ.length) showProg(''); }, 1500); return; }
+  const cur = [...S.active].map(id => S.boxes.get(id)).filter(Boolean)[0];
+  showProg(`Reading box #${cur ? cur.seq : ''}` + (w ? ` · ${w} waiting` : '') + '… keep shooting, this runs in the background.');
+}
+function pump() {
+  while (S.active.size < PARALLEL && S.readQ.length) {
+    const job = S.readQ.shift();
+    S.active.add(job.id);
+    readBox(job.id, job.opts).finally(() => { S.active.delete(job.id); render(); readProg(); pump(); });
+  }
+  readProg(); render();
+}
+async function readBox(id, opts) {
+  const b0 = S.boxes.get(id); if (!b0) return;
+  const ph = b0.photos.map(pid => S.photos.get(pid)).filter(Boolean);
+  if (!ph.length) return;
+  // Tag every photo shipping label vs contents: barcode already did some; Claude decides the rest.
+  const undecided = ph.filter(p => !p.kind);
+  if (undecided.length) {
+    try {
+      const kinds = await classify(undecided.map(p => p.blob));
+      for (let i = 0; i < undecided.length; i++) { undecided[i].kind = kinds[i].kind; await putPhoto(undecided[i]); }
+    } catch (e) { undecided.forEach(p => { p.kind = 'item'; }); }
+  }
+  const labels = ph.filter(p => p.kind === 'label'), items = ph.filter(p => p.kind !== 'label');
+  const wasSent = !!b0.sheetRow;
+  await patchBox(id, b => { if (!wasSent) b.status = 'reading'; b.readError = ''; });
+  if (!S.watch) loadWatch().catch(() => {});
+  const effort = opts.effort || 'high', careful = !!opts.careful;   // Opus 5.5 at high effort (operator's choice)
+  const T0 = performance.now(), ms = {};
+  try {
+    const MAX = 20;
+    const lb = labels.slice(0, MAX).map(p => p.blob), ib = items.map(p => p.blob);
+    const bcRaw = [], bcTracks = [];
+    for (const p of labels) {
+      if (p.codes == null) { const s = codeSummary(await scanCodes(p.blob)); p.codes = s.raw; p.trk = s.tracking; }
+      for (const v of p.codes || []) if (v.length >= 8 && !bcRaw.includes(v)) bcRaw.push(v);
+      if (p.trk && !bcTracks.includes(p.trk)) bcTracks.push(p.trk);
+    }
+    const firstN = Math.max(0, Math.min(ib.length, MAX - lb.length));
+    let prompt = mainPrompt(lb.length, firstN, b0.note, capsDate(TODAY()));
+    if (bcRaw.length) prompt = `The phone decoded these barcodes from the label photos (exact characters): ${bcRaw.slice(0, 8).join(', ')}. When the main tracking number is one of them, copy it exactly from here; a FedEx 12-digit tracking number sits inside its long barcode number; a USPS barcode starting 420+ZIP carries the 22-digit tracking after the ZIP.\n\n` + prompt;
+    const t2 = performance.now();
+    const res = await claude(prompt, [...lb, ...ib.slice(0, firstN)], effort, careful);
+    ms.read = Math.round(performance.now() - t2);
+    if (!res || typeof res !== 'object') throw new Error('Claude answered in the wrong format. Tap Read again.');
+    const contents = [];
+    for (const c of (res.contents || [])) {
+      if (!c || !c.item) continue;
+      const ids = (Array.isArray(c.photos) ? c.photos : []).map(n => items[(parseInt(n, 10) || 0) - 1 - lb.length]).filter(Boolean).map(p => p.id);
+      contents.push({ line: contentsLine(c), photos: ids });
+    }
+    let flags = Array.isArray(res.flags) ? res.flags.map(caps).filter(Boolean) : [];
+    for (let i = firstN; i < ib.length; i += MAX) {
+      const chunk = ib.slice(i, i + MAX);
+      const r2 = await claude(itemsPrompt(chunk.length, b0.note), chunk, effort, careful);
+      for (const c of (r2 && r2.contents) || []) {
+        if (!c || !c.item) continue;
+        const ids = (Array.isArray(c.photos) ? c.photos : []).map(n => items[i + (parseInt(n, 10) || 0) - 1]).filter(Boolean).map(p => p.id);
+        const line = contentsLine(c), key = line.replace(/\s*\(\d+ TOTAL\)$/, '');
+        const hit = contents.find(x => x.line.replace(/\s*\(\d+ TOTAL\)$/, '') === key);
+        if (hit) { const q = (parseInt((hit.line.match(/\((\d+) TOTAL\)$/) || [])[1], 10) || 0) + (parseInt(c.qty, 10) || 1); hit.line = key + ` (${q} TOTAL)`; hit.photos.push(...ids); }
+        else contents.push({ line, photos: ids });
+      }
+      for (const f of (r2 && r2.flags) || []) if (caps(f)) flags.push(caps(f));
+    }
+    // Second, independent read of the tracking number from a full-resolution crop of the label.
+    let verify = null;
+    const lp = parseInt(res.label_photo, 10);
+    const t3 = performance.now();
+    const read1 = normTrack(res.tracking), a1 = alnum(read1);
+    if (labels.length && a1.length >= 8 && bcRaw.some(v => v.includes(a1))) {
+      verify = { first: read1, second: read1, match: true, sure: true, by: 'barcode' };
+    } else if (labels.length && bcTracks.length) {
+      verify = { first: read1, second: bcTracks[0], match: false, sure: true, by: 'barcode' };
+      flags.push(`TRACKING TAKEN FROM THE BARCODE (PHOTO READ ${read1 || 'NOTHING'})`);
+    } else if (labels.length && Array.isArray(res.label_box) && res.label_box.length === 4 && lp >= 1 && lp <= lb.length && res.tracking) {
+      try {
+        const crop = await cropBlob(lb[lp - 1], res.label_box);
+        const v = await claude(VERIFY_PROMPT, [crop], effort, careful);
+        const a = normTrack(res.tracking), bb = normTrack(v && v.tracking);
+        verify = { first: a, second: bb, sure: !!(v && v.sure), match: !!bb && alnum(a) === alnum(bb) && !/\?/.test(bb),
+          weight: v && v.weight_printed ? String(v.weight_printed) : '', unit: (v && v.weight_unit) || '' };
+      } catch (e) { verify = null; }
+    }
+    ms.check = Math.round(performance.now() - t3);
+    ms.total = Math.round(performance.now() - T0);
+    await patchBox(id, b => {
+      const ed = b.edited || {};
+      const set = (k, val) => { if (!ed[k]) b.row[k] = val; };
+      if (labels.length) {
+        set('customer', caps(res.customer) || 'NO NAME ON LABEL');
+        let t = normTrack(res.tracking);
+        if (verify && !verify.match && verify.second && !/\?/.test(verify.second) && verify.sure) t = verify.second;
+        set('tracking', t);
+        let w = roundWeight(res.weight_printed, res.weight_unit);
+        if (!w && verify && verify.weight) w = roundWeight(verify.weight, verify.unit);
+        set('weight', w);
+        set('shipper', normShipper(res.shipper));
+        set('invoice', !!res.invoice);
+      } else if (res.invoice && !ed.invoice) b.row.invoice = true;
+      if (!ed.contents) b.row.contents = contents.map(c => c.line).join(' ///\n');
+      b.proof = contents;
+      const wp = String(res.weight_printed || ''), extra = [];
+      if (/kg/i.test(res.weight_unit || '') && wp) extra.push(`${wp} KG = ${b.row.weight} LB`);
+      else if (wp && wp !== b.row.weight && /\./.test(wp)) extra.push(`LABEL ${wp} LB — ROUNDED TO ${b.row.weight}`);
+      if (b.row.weight === '0') extra.push('UNDER 0.5 LB — LOGGED 0');
+      b.flags = [...new Set([...flags, ...extra])];
+      b.badges = [...new Set((Array.isArray(res.badges) ? res.badges : []).map(caps).filter(Boolean))];
+      b.read = { at: Date.now(), effort, careful, labelPhoto: lp || null, weightPrinted: wp, unit: res.weight_unit || '', verify, ms };
+      b.readError = ''; b.ok = false;
+      if (b.status !== 'sent') b.status = 'read';
+    });
+  } catch (e) {
+    await patchBox(id, b => { if (b.status !== 'sent') b.status = 'error'; b.readError = e.message || 'Reading failed. Tap Read again.'; });
+  }
+}
+
+/* ================= checks ================= */
+function dupesOf(b) {
+  const t = alnum(b.row.tracking);
+  if (!t || t.length < 8) return [];
+  return allBoxes().filter(o => o.id !== b.id && alnum(o.row.tracking) === t);
+}
+function watchHits(b) {
+  if (!S.watch || !b.row.customer) return [];
+  const toks = new Set(caps(b.row.customer).split(/[^A-Z0-9]+/).filter(Boolean));
+  return S.watch.filter(w => w.alts.some(alt => alt.length >= 2 ? alt.every(t => toks.has(t)) : (alt.length === 1 && toks.size === 1 && toks.has(alt[0])))).map(w => w.note);
+}
+function reasons(b) {
+  const r = [], row = b.row;
+  const ph = b.photos.map(id => S.photos.get(id)).filter(Boolean);
+  if (!ph.some(p => p.kind === 'label')) r.push('No label photo — add one or type the row.');
+  if (!row.tracking) r.push('No tracking number.');
+  else if (/NOT IN FRAME|\?/.test(row.tracking)) r.push('Tracking not fully readable — reshoot or type it.');
+  if (b.read && b.read.verify && !b.read.verify.match && b.read.verify.by !== 'barcode' && !(b.edited || {}).tracking) r.push(`Tracking read two ways: ${b.read.verify.first} / ${b.read.verify.second || '—'}. Check the label.`);
+  const tk = alnum(row.tracking);
+  if (/^1Z/.test(tk) && tk.length !== 18) r.push(`UPS tracking numbers have 18 characters — this one has ${tk.length}.`);
+  if (/^TBA/.test(tk) && tk.length !== 15) r.push(`Amazon TBA numbers have 15 characters — this one has ${tk.length}.`);
+  if (row.weight === '' || row.weight == null) r.push('No weight — weigh it and type it in.');
+  if (/NO NAME ON LABEL|UNREADABLE/.test(row.customer || '')) r.push('Customer name missing or partly unreadable.');
+  for (const d of dupesOf(b)) r.push(`Same tracking as box #${d.seq} on ${capsDate(d.day)}${d.day === b.day ? ' — same box photographed twice? Keep one.' : ' — check you don’t have it twice.'}`);
+  return r;
+}
+function isDirty(b) {
+  if (!b.sheetRow || !b.sentCells) return false;
+  return cells(b).slice(0, 7).some((v, i) => caps(v) !== caps(b.sentCells[i]));
+}
+function viewStatus(b) {
+  if (b.sheetRow) return isDirty(b) ? 'dirty' : 'sent';
+  if (S.active.has(b.id)) return 'reading';
+  if (S.readQ.some(j => j.id === b.id)) return 'queued';
+  if (b.status === 'error') return 'error';
+  if (b.status !== 'read') return 'unread';
+  return reasons(b).length && !b.ok ? 'check' : 'ready';
+}
+const STATUS_TEXT = { unread: 'Not read', queued: 'Waiting', reading: 'Reading…', error: 'Error', check: 'Check', ready: 'Ready', sent: 'In sheet', dirty: 'Changed' };
+function cells(b, oneLine) {
+  const r = b.row;
+  const contents = oneLine ? String(r.contents || '').replace(/\s*\n\s*/g, ' ').replace(/\s*\/\/\/\s*/g, ' /// ').trim()
+    : String(r.contents || '').replace(/\s*\/\/\/\s*\n?\s*/g, ' ///\n').replace(/\s*\/\/\/\s*$/, '');
+  return [r.customer, r.tracking, String(r.pieces || 1), String(r.weight ?? ''), r.shipper, r.invoice ? 'INVOICE INCLUDED' : 'NO INVOICE', contents, capsDate(b.day)];
+}
+async function loadWatch() {
+  const j = await api('watch');
+  S.watch = (j.names || []).map(s => {
+    const i = s.lastIndexOf('(');
+    const name = caps(i > 0 ? s.slice(0, i) : s), note = i > 0 ? caps(s.slice(i + 1).replace(/\)\s*$/, '')).replace(/!+/g, '').trim() : '';
+    const plain = name.replace(/\([^)]*\)/g, ' ');
+    const inner = (name.match(/\(([^)]*)\)/g) || []).map(x => x.slice(1, -1));
+    const parts = plain.split(/\s+OR\s+|\s*\/\/\/\s*|\s*\/\s*/).map(x => x.trim()).filter(Boolean);
+    const surname = plain.trim().split(/\s+/).pop();
+    const alts = [...parts.map(p => p.split(/\s+/).length === 1 && parts.length > 1 ? p + ' ' + surname : p), ...inner].map(a => caps(a).split(/[^A-Z0-9]+/).filter(Boolean)).filter(a => a.length);
+    return { name, note: note ? 'WATCH LIST: ' + note : 'ON WATCH LIST', alts };
+  });
+  render();
+}
+
+/* ================= sending ================= */
+const sendable = () => allBoxes().filter(b => b.day === S.day && !b.sheetRow && viewStatus(b) === 'ready').sort((a, b) => a.seq - b.seq);
+const dirtyBoxes = () => allBoxes().filter(b => b.day === S.day && b.sheetRow && isDirty(b));
+async function planSend(only) {
+  const list = only || sendable(); if (!list.length || S.busy) return;
+  S.busy = true; render(); barMsg('Checking the sheet…');
+  try {
+    const { hits } = await api('dupes', { trackings: list.map(b => b.row.tracking) });
+    const dupes = list.filter(b => hits[b.row.tracking]).map(b => ({ b, row: hits[b.row.tracking] }));
+    S.busy = false;
+    if (dupes.length) { S.plan = { list, dupes }; renderPlan(); barMsg(''); render(); return; }
+    await executeSend(list);
+  } catch (e) { S.busy = false; barMsg(''); notice(e.message, true); render(); }
+}
+async function executeSend(list) {
+  if (!list.length) return;
+  S.busy = true; S.plan = null; renderPlan(); render(); barMsg(`Writing ${list.length} row${list.length === 1 ? '' : 's'}…`);
+  try {
+    const rows = list.map(b => ({ id: b.id, day: b.day, cells: cells(b).slice(0, 7) }));
+    const { placed } = await api('append', { rows });
+    for (const p of placed) await patchBox(p.id, x => { x.sheetRow = p.row; x.status = 'sent'; x.sentCells = cells(x); x.sentAt = Date.now(); });
+    const rs = placed.map(p => p.row);
+    barMsg(`Sent ${placed.length} · sheet rows ${Math.min(...rs)}–${Math.max(...rs)} · saving photos…`);
+    for (const p of placed) await linkPhotos(S.boxes.get(p.id));
+    barMsg(`Sent ${placed.length} · sheet rows ${Math.min(...rs)}–${Math.max(...rs)} · photos linked`);
+  } catch (e) { barMsg(''); notice(e.message, true); }
+  finally { S.busy = false; render(); }
+}
+/* Photos → Drive folder, private links in AV–BJ of the box's row (labels first, then inside; max 15). */
+async function linkPhotos(b) {
+  if (!b || !b.sheetRow || b.photosLinked) return;
+  try {
+    const ph = b.photos.map(id => S.photos.get(id)).filter(Boolean);
+    const ordered = [...ph.filter(p => p.kind === 'label'), ...ph.filter(p => p.kind !== 'label')].slice(0, 15);
+    let nl = 0, ni = 0;
+    const photos = [];
+    for (const p of ordered) {
+      const label = p.kind === 'label' ? `LABEL ${++nl}` : `INSIDE ${++ni}`;
+      photos.push({ label, name: `${b.day} box ${b.seq} ${caps(b.row.customer).slice(0, 30)} ${label}.jpg`, b64: await toApiB64(p.blob) });
+    }
+    if (!photos.length) return;
+    await api('photos', { row: b.sheetRow, expectTracking: b.row.tracking, photos });
+    await patchBox(b.id, x => { x.photosLinked = true; });
+  } catch (e) { notice(`Row ${b.sheetRow} is in the sheet, but its photos couldn’t be saved: ${e.message}`, true); }
+}
+async function updateRows() {
+  const list = dirtyBoxes(); if (!list.length || S.busy) return;
+  S.busy = true; render();
+  try {
+    for (const b of list) {
+      barMsg(`Updating sheet row ${b.sheetRow}…`);
+      await api('update', { row: b.sheetRow, expectTracking: b.sentCells[1], cells: cells(b).slice(0, 7) });
+      await patchBox(b.id, x => { x.sentCells = cells(x); });
+    }
+    barMsg(`Updated ${list.length} row${list.length === 1 ? '' : 's'}`);
+  } catch (e) { barMsg(''); notice(e.message, true); }
+  finally { S.busy = false; render(); }
+}
+
+/* ================= rendering ================= */
+function notice(msg, bad) {
+  const n = $('#notice');
+  if (!msg) { n.hidden = true; return; }
+  n.className = 'notice' + (bad ? ' bad' : ''); n.textContent = msg;
+  const x = document.createElement('button'); x.type = 'button'; x.textContent = 'Dismiss'; x.onclick = () => notice(null); n.append(x);
+  n.hidden = false;
+}
+function showProg(t) { const p = $('#prog'); p.textContent = t || ''; p.hidden = !t; }
+function barMsg(t) { $('#barMsg').textContent = t || ''; }
+function thumbHtml(id) {
+  const p = S.photos.get(id); if (!p) return '';
+  const tag = p.kind === 'label' ? '<span class="tag lab">L</span>' : (p.kind ? '<span class="tag">IN</span>' : '');
+  return `<button type="button" class="thumb" data-photo="${esc(id)}"><img src="${esc(photoUrl(id))}" alt="" loading="lazy">${tag}</button>`;
+}
+function renderPending() {
+  const list = pendingPhotos();
+  $('#pending').hidden = !list.length;
+  $('#pendCount').textContent = `${list.length} photo${list.length === 1 ? '' : 's'} waiting to be sorted`;
+  $('#pendThumbs').innerHTML = list.slice(-30).map(p => `<span class="thumb"><img src="${esc(photoUrl(p.id))}" alt="">${p.split ? '<span class="tag cut">NEW</span>' : ''}</span>`).join('');
+  $('#pendSort').disabled = sorting; $('#pendSort').textContent = sorting ? 'Sorting…' : 'SORT INTO BOXES & READ';
+}
+function cardHtml(b) {
+  const vs = viewStatus(b), row = b.row, ex = S.expanded.has(b.id);
+  const last4 = row.tracking ? '…' + String(row.tracking).replace(/\s/g, '').slice(-4) : '';
+  const sub = [last4, row.weight !== '' && row.weight != null ? row.weight + ' lb' : '', row.shipper].filter(Boolean).join(' · ') || `${b.photos.length} photo${b.photos.length === 1 ? '' : 's'}`;
+  const st = vs === 'sent' ? `Row ${b.sheetRow}` : STATUS_TEXT[vs];
+  const watch = watchHits(b), rs = reasons(b);
+  const chips = [...watch.map(w => `<span class="chip bad">${esc(w)}</span>`), ...b.flags.map(f => `<span class="chip flag">${esc(f)}</span>`), ...(ex ? b.badges.map(x => `<span class="chip">${esc(x)}</span>`) : [])].join('');
+  let h = `<article class="card" data-id="${esc(b.id)}"><button type="button" class="card-top" data-act="toggle" aria-expanded="${ex}">
+    <span class="no">#${b.seq}</span><span class="who"><b>${esc(row.customer || (vs === 'reading' ? 'Reading…' : 'Box ' + b.seq))}</b><span>${esc(sub)}</span></span>
+    <span class="st ${vs}">${esc(st)}</span></button>`;
+  if (chips) h += `<div class="chips">${chips}</div>`;
+  if (!ex) return h + '</article>';
+  const ph = b.photos.map(id => S.photos.get(id)).filter(Boolean);
+  const labels = ph.filter(p => p.kind === 'label'), items = ph.filter(p => p.kind !== 'label');
+  h += `<div class="detail">`;
+  if (b.readError) h += `<div class="err">${esc(b.readError)}</div>`;
+  if (rs.length && ['check', 'dirty', 'sent'].includes(vs)) h += `<div class="reasons"><b>Check before sending</b><ul>${rs.map(r => `<li>${esc(r)}</li>`).join('')}</ul></div>`;
+  h += `<div class="proof"><div class="thumbs">${labels.map(p => thumbHtml(p.id)).join('') || '<span class="muted">No label photo</span>'}</div>
+    <div class="fields">
+      <div class="f wide"><label for="cu-${b.id}">Customer</label><input id="cu-${b.id}" data-field="customer" value="${esc(row.customer)}" autocomplete="off"></div>
+      <div class="f wide"><label for="tr-${b.id}">Tracking #</label><input id="tr-${b.id}" class="trk" data-field="tracking" value="${esc(row.tracking)}" autocomplete="off"></div>
+      <div class="f"><label for="wt-${b.id}">Weight (lb)</label><input id="wt-${b.id}" data-field="weight" value="${esc(row.weight)}" inputmode="decimal" autocomplete="off"></div>
+      <div class="f"><label>Invoice</label><button type="button" class="inv ${row.invoice ? 'yes' : 'no'}" data-act="inv">${row.invoice ? 'INVOICE INCLUDED' : 'NO INVOICE'}</button></div>
+      <div class="f wide"><label for="sh-${b.id}">Shipper / origin</label><input id="sh-${b.id}" data-field="shipper" value="${esc(row.shipper)}" autocomplete="off"></div>
+      <div class="f wide"><label for="no-${b.id}">Note for Claude</label><input id="no-${b.id}" data-field="note" value="${esc(b.note)}" placeholder="e.g. 10 of the green, 5 of the pink" autocomplete="off" style="text-transform:none"></div>
+      <div class="f wide"><label for="co-${b.id}">Contents</label><textarea id="co-${b.id}" data-field="contents" spellcheck="false">${esc(row.contents)}</textarea></div>
+    </div></div>`;
+  const proof = (b.proof || []).filter(c => c.photos && c.photos.length);
+  if (proof.length) h += `<div class="lines"><div class="muted">Photo proof — each contents line next to its photos</div>` +
+    proof.map(c => `<div class="line"><span>${esc(c.line)}</span><span class="thumbs">${c.photos.slice(0, 4).map(thumbHtml).join('')}</span></div>`).join('') + `</div>`;
+  else if (items.length) h += `<div class="thumbs">${items.map(p => thumbHtml(p.id)).join('')}</div>`;
+  h += `<div class="row-actions">
+    <button type="button" class="btn small" data-act="cam">+ Camera</button>
+    <button type="button" class="btn small" data-act="reread" ${ph.length ? '' : 'disabled'}>Read again</button>
+    ${vs === 'ready' ? '<button type="button" class="btn small primary" data-act="send1">Send to sheet</button>' : ''}
+    ${vs === 'check' ? '<button type="button" class="btn small tape" data-act="ok">Looks good</button>' : ''}
+    ${vs === 'dirty' ? '<button type="button" class="btn small tape" data-act="upd">Update sheet row</button>' : ''}
+    <button type="button" class="btn small danger" data-act="del">Delete</button></div>`;
+  if (S.confirmDel === b.id) h += `<div class="confirm"><span>Delete box #${b.seq} and its ${ph.length} photo${ph.length === 1 ? '' : 's'}?${b.sheetRow ? ' Its row stays in the sheet.' : ''}</span>
+    <button type="button" class="btn small danger" data-act="del-yes">Delete</button><button type="button" class="btn small" data-act="del-no">Keep</button></div>`;
+  const m = b.read && b.read.ms;
+  if (m) h += `<div class="muted">Read in ${(m.total / 1000).toFixed(1)} s — Claude ${(m.read / 1000).toFixed(1)} · tracking check ${(m.check / 1000).toFixed(1)}${b.read.verify ? (b.read.verify.by === 'barcode' ? ' (barcode)' : ' (second read)') : ''}${b.read.careful ? ' · careful model' : ''}</div>`;
+  if (b.sheetRow) h += `<div class="muted">In the sheet at row ${b.sheetRow}${b.photosLinked ? ' · photos linked in AV–BJ' : ''}.</div>`;
+  if (b.sheetRow && !b.photosLinked) h += `<div class="row-actions"><button type="button" class="btn small" data-act="links">Link photos in sheet</button></div>`;
+  return h + `</div></article>`;
+}
+const sig = new Map();
+function renderList() {
+  const box = $('#boxes');
+  const days = [...new Set([TODAY(), ...allBoxes().map(b => b.day)])].sort().reverse();
+  const sel = $('#daySel');
+  const opts = days.map(d => `<option value="${d}"${d === S.day ? ' selected' : ''}>${capsDate(d)}${d === TODAY() ? ' (today)' : ''}</option>`).join('');
+  if (sel.dataset.sig !== opts) { sel.innerHTML = opts; sel.dataset.sig = opts; }
+  $('#listTitle').textContent = S.day === TODAY() ? 'Today' : capsDate(S.day);
+  const list = allBoxes().filter(b => b.day === S.day).sort((a, b) => b.seq - a.seq);
+  const counts = {}; let lb = 0;
+  for (const b of list) { const v = viewStatus(b); counts[v] = (counts[v] || 0) + 1; lb += parseFloat(b.row.weight) || 0; }
+  $('#dayStats').textContent = list.length ? `${list.length} box${list.length === 1 ? '' : 'es'} · ${Math.round(lb)} lb` + ['ready', 'check', 'sent', 'dirty', 'error'].filter(k => counts[k]).map(k => ` · ${counts[k]} ${STATUS_TEXT[k].toLowerCase()}`).join('') : '';
+  $('#emptyList').hidden = list.length > 0;
+  const focus = document.activeElement, ids = new Set(list.map(b => b.id));
+  for (const el of [...box.children]) if (!ids.has(el.dataset.id)) { el.remove(); sig.delete(el.dataset.id); }
+  let prev = null;
+  for (const b of list) {
+    const html = cardHtml(b);
+    let el = box.querySelector(`[data-id="${CSS.escape(b.id)}"]`);
+    if (!el || (sig.get(b.id) !== html && !(focus && el.contains(focus) && focus.matches('input,textarea')))) {
+      const t = document.createElement('template'); t.innerHTML = html.trim();
+      const fresh = t.content.firstElementChild;
+      if (el) el.replaceWith(fresh); else box.append(fresh);
+      el = fresh; sig.set(b.id, html);
+    }
+    if (prev ? prev.nextElementSibling !== el : box.firstElementChild !== el) { if (prev) prev.after(el); else box.prepend(el); }
+    prev = el;
+  }
+}
+function renderBar() {
+  const n = sendable().length, d = dirtyBoxes().length, btn = $('#sendBtn');
+  btn.textContent = S.busy ? 'Working…' : (n ? `Send ${n} to sheet` : (d ? `Update ${d} changed row${d === 1 ? '' : 's'}` : 'Nothing ready to send'));
+  btn.disabled = S.busy || (!n && !d);
+  btn.dataset.mode = n ? 'send' : (d ? 'update' : '');
+}
+function renderPlan() {
+  const el = $('#plan');
+  if (!S.plan) { el.hidden = true; el.innerHTML = ''; return; }
+  const { list, dupes } = S.plan;
+  el.innerHTML = `<b>${dupes.length} of these ${dupes.length === 1 ? 'is' : 'are'} already in the sheet:</b> ` + dupes.map(d => `#${d.b.seq} ${esc(d.b.row.customer)} (row ${d.row})`).join(', ') +
+    `<div class="row-actions" style="margin-top:8px"><button type="button" class="btn small" id="planSkip">Skip ${dupes.length === 1 ? 'it' : 'those'}</button><button type="button" class="btn small" id="planAll">Send all anyway</button><button type="button" class="btn small" id="planCancel">Cancel</button></div>`;
+  el.hidden = false;
+  $('#planSkip').onclick = () => executeSend(list.filter(b => !dupes.some(d => d.b.id === b.id)));
+  $('#planAll').onclick = () => executeSend(list);
+  $('#planCancel').onclick = () => { S.plan = null; renderPlan(); };
+}
+function renderCurrent() {
+  const b = S.current && S.boxes.get(S.current);
+  $('#curBar').hidden = !b || !b.photos.length;
+  if (!b) return;
+  const ph = b.photos.map(id => S.photos.get(id)).filter(Boolean);
+  const nl = ph.filter(p => p.kind === 'label').length;
+  $('#curText').textContent = `Box #${b.seq} in progress — ${nl ? nl + ' label' : 'no label yet'}, ${ph.length - nl} other photo${ph.length - nl === 1 ? '' : 's'}`;
+  $('#curThumbs').innerHTML = ph.slice(-12).map(p => thumbHtml(p.id)).join('');
+}
+function render() { $('#todayChip').textContent = capsDate(TODAY()); renderCurrent(); renderPending(); renderList(); renderBar(); }
+
+/* ================= events ================= */
+$('#pendSort').addEventListener('click', sortPending);
+$('#curFinish').addEventListener('click', finishCurrent);
+$('#pendClear').addEventListener('click', () => { $('#pendConfirm').hidden = false; });
+$('#pendClearNo').addEventListener('click', () => { $('#pendConfirm').hidden = true; });
+$('#pendClearYes').addEventListener('click', async () => {
+  $('#pendConfirm').hidden = true;
+  for (const p of pendingPhotos()) { await delPhoto(p.id); S.photos.delete(p.id); }
+  render();
+});
+$('#daySel').addEventListener('change', e => { S.day = e.target.value; render(); });
+$('#sendBtn').addEventListener('click', () => { if ($('#sendBtn').dataset.mode === 'update') updateRows(); else planSend(); });
+$('#copyBtn').addEventListener('click', () => {
+  const list = allBoxes().filter(b => b.day === S.day && (b.row.customer || b.row.tracking)).sort((a, b) => a.seq - b.seq);
+  const tsv = list.map(b => cells(b, true).join('\t')).join('\n'), fb = $('#copyFallback');
+  const fallback = () => { fb.value = tsv; fb.hidden = false; fb.select(); barMsg('Select all and copy'); };
+  try { navigator.clipboard.writeText(tsv).then(() => { fb.hidden = true; barMsg(`Copied ${list.length} row${list.length === 1 ? '' : 's'}`); }, fallback); } catch (e) { fallback(); }
+});
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-photo]'); if (t) { openLb(t.dataset.photo); return; }
+  const a = e.target.closest('[data-act]'); if (!a) return;
+  const card = a.closest('[data-id]'); if (!card) return;
+  const id = card.dataset.id, b = S.boxes.get(id); if (!b) return;
+  switch (a.dataset.act) {
+    case 'toggle': S.expanded.has(id) ? S.expanded.delete(id) : S.expanded.add(id); render(); break;
+    case 'inv': patchBox(id, x => { x.row.invoice = !x.row.invoice; x.edited.invoice = true; }); break;
+    case 'ok': patchBox(id, x => { x.ok = true; }); break;
+    case 'reread': queueRead(id, { effort: 'medium', careful: true }); break;
+    case 'cam': openCamera(id); break;
+    case 'links': barMsg('Saving photos…'); linkPhotos(b).then(() => barMsg('')); break;
+    case 'send1': planSend([b]); break;
+    case 'upd': updateRows(); break;
+    case 'del': S.confirmDel = id; render(); break;
+    case 'del-no': S.confirmDel = null; render(); break;
+    case 'del-yes': deleteBox(id); break;
+  }
+});
+document.addEventListener('change', e => {
+  const f = e.target.closest('[data-field]'); if (!f) return;
+  const card = f.closest('[data-id]'); if (!card) return;
+  const field = f.dataset.field; let v = f.value;
+  if (field === 'note') { patchBox(card.dataset.id, x => { x.note = v.trim(); }); return; }
+  if (field === 'tracking') v = normTrack(v);
+  else if (field === 'weight') v = v.trim() === '' ? '' : roundWeight(v, /kg/i.test(v) ? 'kg' : 'lb');
+  else if (field === 'contents') v = v.split('\n').map(caps).filter(Boolean).map(l => l.replace(/\s*\/\/\/$/, '')).join(' ///\n');
+  else v = caps(v);
+  patchBox(card.dataset.id, x => { x.row[field] = v; x.edited[field] = true; });
+});
+async function deleteBox(id) {
+  const b = S.boxes.get(id); S.confirmDel = null; if (!b) return;
+  for (const pid of b.photos) { await delPhoto(pid); S.photos.delete(pid); }
+  await delBoxDb(id); S.boxes.delete(id); S.expanded.delete(id); render();
+}
+
+/* lightbox: zoom, move to another box, flip label/inside, remove */
+function openLb(pid) {
+  const p = S.photos.get(pid); if (!p) return;
+  const b = p.box ? S.boxes.get(p.box) : null;
+  S.lb = { pid, box: b ? b.id : null };
+  $('#lbImg').src = photoUrl(pid); $('#lbScroll').classList.remove('zoom');
+  $('#lbCap').textContent = b ? `Box #${b.seq} · ${p.kind === 'label' ? 'label' : 'inside'} photo · tap to zoom` : 'Tap to zoom';
+  $('#lbTools').hidden = !b;
+  if (b) {
+    const day = allBoxes().filter(x => x.day === b.day && x.id !== b.id && !x.sheetRow).sort((x, y) => x.seq - y.seq);
+    $('#lbMove').innerHTML = day.map(x => `<option value="${esc(x.id)}">#${x.seq} ${esc(x.row.customer)}</option>`).join('') + '<option value="__new">New box</option>';
+    $('#lbKind').textContent = p.kind === 'label' ? 'Make it inside' : 'Make it a label';
+  }
+  $('#lb').hidden = false;
+}
+function closeLb() { $('#lb').hidden = true; $('#lbImg').removeAttribute('src'); S.lb = null; }
+$('#lbImg').addEventListener('click', () => $('#lbScroll').classList.toggle('zoom'));
+$('#lbClose').addEventListener('click', closeLb);
+$('#lbMoveBtn').addEventListener('click', async () => {
+  if (!S.lb || !S.lb.box) return;
+  const { pid, box } = S.lb; closeLb();
+  let to = $('#lbMove').value;
+  if (to === '__new') to = (await newBox()).id;
+  const p = S.photos.get(pid);
+  await patchBox(box, b => { b.photos = b.photos.filter(x => x !== pid); b.ok = false; });
+  p.box = to; await putPhoto(p);
+  await patchBox(to, b => { b.photos.push(pid); b.ok = false; });
+  if (S.boxes.get(box).photos.length) queueRead(box);
+  queueRead(to);
+});
+$('#lbKind').addEventListener('click', async () => {
+  if (!S.lb || !S.lb.box) return;
+  const { pid, box } = S.lb; closeLb();
+  const p = S.photos.get(pid); p.kind = p.kind === 'label' ? 'item' : 'label'; await putPhoto(p);
+  queueRead(box);
+});
+$('#lbDel').addEventListener('click', async () => {
+  if (!S.lb || !S.lb.box) return;
+  const { pid, box } = S.lb; closeLb();
+  await patchBox(box, b => { b.photos = b.photos.filter(x => x !== pid); b.ok = false; });
+  await delPhoto(pid); S.photos.delete(pid);
+  if (S.boxes.get(box).photos.length) queueRead(box); else render();
+});
+
+/* settings */
+function openSettings() {
+  $('#setUrl').value = S.cfg.url; $('#setToken').value = S.cfg.token;
+  $('#setSharp').checked = S.sharp; $('#setAutoSort').checked = S.autoSort;
+  $('#settings').hidden = false; storageInfo();
+}
+async function storageInfo() {
+  try { const e = await navigator.storage.estimate(); $('#storeInfo').textContent = `Photos on this phone: ${S.photos.size} · ${Math.round((e.usage || 0) / 1048576)} MB used`; } catch (e) {}
+}
+$('#gearBtn').addEventListener('click', openSettings);
+$('#setClose').addEventListener('click', () => { $('#settings').hidden = true; });
+$('#setSharp').addEventListener('change', e => { S.sharp = e.target.checked; ls.set('sharp', S.sharp ? '1' : '0'); });
+$('#setAutoSort').addEventListener('change', e => { S.autoSort = e.target.checked; ls.set('autoSort', S.autoSort ? '1' : '0'); });
+$('#setSave').addEventListener('click', async () => {
+  S.cfg = { url: $('#setUrl').value.trim(), token: $('#setToken').value.trim() };
+  ls.set('backendUrl', S.cfg.url); ls.set('backendToken', S.cfg.token);
+  const st = $('#setStatus'); st.textContent = 'Testing…';
+  try {
+    const j = await api('ping');
+    st.textContent = `Connected. Model: ${j.model}. Sheet tab: ${j.tab}, next row about ${j.nextRow}.` + (j.hasKey ? '' : ' The Anthropic API key is NOT set in the backend yet.');
+    loadWatch().catch(() => {});
+  } catch (e) { st.textContent = e.message; }
+});
+$('#purgeBtn').addEventListener('click', async () => {
+  const cutoff = Date.now() - 7 * 86400000; let n = 0;
+  for (const b of allBoxes()) {
+    if (!b.sheetRow || b.createdAt > cutoff) continue;
+    for (const pid of b.photos) { await delPhoto(pid); S.photos.delete(pid); n++; }
+    b.photos = []; await putBox(b);
+  }
+  $('#storeInfo').textContent = `Deleted ${n} photo${n === 1 ? '' : 's'}.`; render();
+});
+
+/* ================= boot ================= */
+(async () => {
+  render();                                            // draw immediately; saved boxes fill in a moment later
+  try {
+    const [photos, boxes] = await Promise.all([allPhotosMeta(), allBoxesDb()]);
+    for (const p of photos) S.photos.set(p.id, p);
+    for (const b of boxes) { if (b.status === 'reading' || b.status === 'queued') b.status = 'new'; S.boxes.set(b.id, b); }
+  } catch (e) { notice('This phone’s storage couldn’t be opened. Photos won’t be kept.', true); }
+  try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch (e) {}
+  render();
+  if (!S.cfg.url || !S.cfg.token) { notice('First time: open Settings and paste the backend address and access code.', false); }
+  else loadWatch().catch(() => {});
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) $('#camBtn').disabled = true;
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  setInterval(() => { $('#todayChip').textContent = capsDate(TODAY()); }, 60000);
+})();
+})();
+</script>
+</body>
+</html>
