@@ -307,6 +307,20 @@ function mainPrompt(nL, nI, note, today) {
 const itemsPrompt = (n, note) => `These ${n} photos show more of what was INSIDE one package.` +
   (note ? `\n\nThe operator's note: "${note}"` : '') +
   `\n\nReply with ONLY one JSON object: {"contents":[{"item":"","qty":1,"photos":[]}],"flags":[]} — photos are the image numbers (1–${n}) the item appears in.`;
+/* ---- Read-ahead prompts: the label and each contents photo are read WHILE the operator keeps shooting. ---- */
+const LABEL_PROMPT = (n, today) => `Read ${n === 1 ? 'this photo' : `these ${n} photos`} of the OUTSIDE of ONE package (shipping label and carton print). Today is ${today}.
+Reply with ONLY one JSON object, exactly these keys:
+{"customer":"","tracking":"","weight_printed":"","weight_unit":"lb","shipper":"","invoice":false,"label_photo":1,"label_box":[0,0,1,1],"carton_items":[{"item":"","qty":1}],"flags":[],"badges":[]}
+- label_photo / label_box: the image with the clearest view of the main shipping label and that label's bounding box as fractions [left, top, right, bottom].
+- carton_items: products named in the carton print, if any (used only when the box has no inside photos). [] when none.`;
+const ITEM_PROMPT = `This ONE photo shows something that was INSIDE a package: an item, a product box, a packing slip or an invoice.
+Reply with ONLY one JSON object: {"items":[{"item":"","qty":1}],"slip":false,"invoice":false,"flags":[]}
+- items: what this photo shows, "BRAND ITEM" in CAPS per the rules (no SKU codes); qty = units or packs visible in THIS photo.
+- If it is a packing slip or invoice: list its lines with their quantities and set slip true; invoice true only when it shows prices.`;
+const MERGE_PROMPT = (photosJson, note) => `These are per-photo readings of the INSIDE photos of ONE package, in the order they were taken (n = photo number):
+${photosJson}
+${note ? `The operator's note (trust it over the photos): "${note}"\n` : ''}Combine them into the box's CONTENTS following the counting rules: every photo is its own unit (the same product in two photos = qty 2), packs count as packs, a packing slip's quantities win over photo counts, order = slip order if there is a slip, otherwise photo order. Merge entries that name the same product (keep the clearest name).
+Reply with ONLY one JSON object: {"contents":[{"item":"","qty":1,"photos":[1]}],"flags":[]} — photos = the photo numbers each line came from.`;
 const VERIFY_PROMPT = `This is a shipping label (usually a close-up crop of it). Read it independently and carefully.
 Return ONLY JSON: {"tracking":"","weight_printed":"","weight_unit":"lb","sure":true}
 - tracking: the main tracking number, no spaces. UPS 1Z = 18 characters; FedEx = 12 digits (drop a 96/9622 prefix of the long barcode string); USPS = the 22-digit tracking line; Amazon TBA and other codes exactly as printed. Put ? in place of any character you cannot read.
@@ -651,6 +665,7 @@ function preSort(p) {
       const lab = /label/i.test((r && r.kind) || '');
       p.kind = lab ? 'label' : 'item'; p.trk4 = alnum((r && r.trk4) || '').slice(-4); p.lbox = lab ? okBox(r && r.box) : null;
       await putPhoto(p); render(); prepare(p);
+      preRead(p);                                            // start reading it now, while the operator keeps shooting
     } catch (e) { /* the read sorts it instead */ }
     finally { sortRunning--; S.sortP.delete(p.id); nextSort(); }
   });
@@ -776,11 +791,25 @@ async function readBox(id, opts) {
   const first = opts.effort || (S.alwaysHigh ? 'high' : 'medium');
   try {
     const t1 = performance.now();
-    let r = await readOnce(b0, labels, items, first, careful);
-    let escalated = false;
-    // 20-second target: a second, high-effort read only when the first one left enough time for it.
-    // Otherwise the box shows "Check" with the reason, and "Read again" does the careful read on demand.
-    if (first !== 'high' && unsure(r) && performance.now() - T0 < READ_BUDGET_MS / 2) { r = await readOnce(b0, labels, items, 'high', careful); escalated = true; }
+    let r = null, escalated = false;
+    // Fast path: most of the box was already read while it was being shot (see readAhead).
+    if (first === 'medium' && !careful) r = await readAhead(b0, labels, items).catch(() => null);
+    if (r) {
+      // Only the LABEL is re-read at high when it looks unsure; the contents stay as read.
+      if (unsure(r) && labels.length && performance.now() - T0 < READ_BUDGET_MS / 2) {
+        const lab = await startLabelRead(preOf(b0.id), labels, 'high').catch(() => null);
+        if (lab && lab.res && typeof lab.res === 'object') {
+          const extraFlags = (Array.isArray(lab.res.flags) ? lab.res.flags : []).map(caps).filter(Boolean);
+          r = Object.assign({}, r, { res: Object.assign({}, lab.res, { invoice: !!(r.res.invoice || lab.res.invoice) }), verify: verifyOf(lab.res, lab.v), flags: [...new Set([...r.flags, ...extraFlags])] });
+          escalated = true;
+        }
+      }
+    } else {
+      r = await readOnce(b0, labels, items, first, careful);
+      // 20-second target: a second, high-effort read only when the first one left enough time for it.
+      // Otherwise the box shows "Check" with the reason, and "Read again" does the careful read on demand.
+      if (first !== 'high' && unsure(r) && performance.now() - T0 < READ_BUDGET_MS / 2) { r = await readOnce(b0, labels, items, 'high', careful); escalated = true; }
+    }
     ms.read = Math.round(performance.now() - t1);
     ms.total = Math.round(performance.now() - T0);
     const { res, verify, contents, flags } = r;
@@ -806,7 +835,7 @@ async function readBox(id, opts) {
       if (b.row.weight === '0') extra.push('UNDER 0.5 LB — LOGGED 0');
       b.flags = [...new Set([...flags, ...extra])];
       b.badges = [...new Set((Array.isArray(res.badges) ? res.badges : []).map(caps).filter(Boolean))];
-      b.read = { at: Date.now(), effort: escalated ? 'high' : first, escalated, careful, labelPhoto: parseInt(res.label_photo, 10) || null, weightPrinted: wp, unit: res.weight_unit || '', verify, ms };
+      b.read = { at: Date.now(), effort: escalated ? 'high' : first, escalated, careful, ahead: !!r.ahead, labelPhoto: parseInt(res.label_photo, 10) || null, weightPrinted: wp, unit: res.weight_unit || '', verify, ms };
       b.readError = ''; b.ok = false;
       if (b.status !== 'sent') b.status = 'read';
     });
@@ -860,6 +889,64 @@ async function readOnce(b0, labels, items, effort, careful) {
       weight: v.weight_printed ? String(v.weight_printed) : '', unit: v.weight_unit || '' };
   }
   return { res, verify, contents, flags, hasLabel: !!lb.length };
+}
+/* ================= read-ahead: read while the operator is still shooting =================
+   The label (with its tracking check) starts reading the moment a photo is sorted as a label;
+   every contents photo is read on its own as soon as it's sorted. When the box is finished,
+   only the results are combined, so the wait after NEXT BOX is a few seconds, not a full read. */
+S.pre = new Map();                                     // boxId -> { labelKey, labelP, items: Map(photoId -> promise) }
+function preOf(boxId) { let x = S.pre.get(boxId); if (!x) { x = { labelKey: '', labelP: null, items: new Map() }; S.pre.set(boxId, x); } return x; }
+function labelRead(labels, effort) {
+  const lb = labels.slice(0, 6), lp = lb.find(p => p.lbox) || lb[0];
+  const mainP = claude({ system: SYS, prompt: LABEL_PROMPT(lb.length, capsDate(TODAY())), effort, images: lb.map(p => ({ blob: p.blob, max: SIZE.label })) });
+  const checkP = (async () => claude({ prompt: VERIFY_PROMPT, images: [{ blob: await labelCrop(lp), max: SIZE.label }], effort }))().catch(() => null);
+  return Promise.all([mainP, checkP]).then(([res, v]) => ({ res, v }));
+}
+function itemRead(p) { return claude({ system: SYS, prompt: ITEM_PROMPT, effort: 'low', images: [{ blob: p.blob, max: SIZE.inside }] }); }
+function startLabelRead(pre, labels, effort) {
+  pre.labelKey = labels.map(x => x.id).join(',') + '|' + effort;
+  pre.labelP = labelRead(labels, effort); pre.labelP.catch(() => {});
+  return pre.labelP;
+}
+function preRead(p) {
+  if (!p || !p.box || !p.kind || !S.cfg.url || !S.cfg.token) return;
+  const b = S.boxes.get(p.box); if (!b || b.sheetRow) return;
+  const pre = preOf(b.id);
+  if (p.kind === 'label') {
+    const labels = b.photos.map(id => S.photos.get(id)).filter(x => x && x.kind === 'label');
+    if (pre.labelKey !== labels.map(x => x.id).join(',') + '|medium') startLabelRead(pre, labels, 'medium');
+  } else if (!pre.items.has(p.id)) { const pr = itemRead(p); pr.catch(() => {}); pre.items.set(p.id, pr); }
+}
+function verifyOf(res, v) {
+  if (!v || !res || !res.tracking) return null;
+  const a = normTrack(res.tracking), bb = normTrack(v.tracking);
+  return { first: a, second: bb, sure: !!v.sure, match: !!bb && alnum(a) === alnum(bb) && !/\?/.test(bb), weight: v.weight_printed ? String(v.weight_printed) : '', unit: v.weight_unit || '' };
+}
+/* Uses whatever was read ahead, reads only what's missing, then combines. Throws if anything failed (the caller falls back to a full read). */
+async function readAhead(b0, labels, items) {
+  const pre = preOf(b0.id);
+  if (labels.length && pre.labelKey !== labels.map(x => x.id).join(',') + '|medium') startLabelRead(pre, labels, 'medium');
+  for (const p of items) if (!pre.items.has(p.id)) { const pr = itemRead(p); pr.catch(() => {}); pre.items.set(p.id, pr); }
+  const [lab, per] = await Promise.all([labels.length ? pre.labelP : Promise.resolve(null), Promise.all(items.map(p => pre.items.get(p.id)))]);
+  const res = Object.assign({}, (lab && lab.res) || {});
+  if (labels.length && (!lab || !lab.res || typeof lab.res !== 'object')) throw new Error('label read failed');
+  const flags = (Array.isArray(res.flags) ? res.flags : []).map(caps).filter(Boolean);
+  let invoice = !!res.invoice, contents = [];
+  for (const r of per) { for (const f of (r && r.flags) || []) if (caps(f)) flags.push(caps(f)); if (r && r.invoice) invoice = true; }
+  const clean = r => ((r && r.items) || []).filter(x => x && x.item);
+  if (items.length === 1 && !b0.note) {
+    contents = clean(per[0]).map(c => ({ line: contentsLine(c), photos: [items[0].id] }));
+  } else if (items.length) {
+    const photosJson = JSON.stringify(per.map((r, i) => ({ n: i + 1, slip: !!(r && r.slip), items: clean(r).map(x => ({ item: caps(x.item), qty: parseInt(x.qty, 10) || 1 })) })));
+    const m = await claude({ system: SYS, prompt: MERGE_PROMPT(photosJson, b0.note), effort: 'low', fast: true });
+    contents = ((m && m.contents) || []).filter(c => c && c.item).map(c => ({ line: contentsLine(c), photos: (Array.isArray(c.photos) ? c.photos : []).map(n => items[(parseInt(n, 10) || 0) - 1]).filter(Boolean).map(p => p.id) }));
+    for (const f of (m && m.flags) || []) if (caps(f)) flags.push(caps(f));
+  } else if (Array.isArray(res.carton_items) && res.carton_items.some(c => c && c.item)) {
+    contents = res.carton_items.filter(c => c && c.item).map(c => ({ line: contentsLine(c), photos: [] }));
+    flags.push('CONTENTS FROM CARTON PRINT');
+  }
+  res.invoice = invoice;
+  return { res, verify: verifyOf(res, lab && lab.v), contents, flags: [...new Set(flags)], hasLabel: !!labels.length, ahead: true };
 }
 /* Worth a second, high-effort read? Only for the things that cost the most when wrong. */
 function unsure(r) {
@@ -1112,7 +1199,7 @@ function cardHtml(b) {
   if (S.confirmDel === b.id) h += `<div class="confirm"><span>Delete box #${b.seq} and its ${ph.length} photo${ph.length === 1 ? '' : 's'}?${b.sheetRow ? ' Its row stays in the sheet.' : ''}</span>
     <button type="button" class="btn small danger" data-act="del-yes">Delete</button><button type="button" class="btn small" data-act="del-no">Keep</button></div>`;
   const m = b.read && b.read.ms;
-  if (m) h += `<div class="muted">Read in ${(m.total / 1000).toFixed(1)} s — sorting ${((m.sort || 0) / 1000).toFixed(1)} · reading + tracking check ${((m.read || 0) / 1000).toFixed(1)}` +
+  if (m) h += `<div class="muted">Read in ${(m.total / 1000).toFixed(1)} s after you finished the box${b.read.ahead ? ' (read ahead while shooting)' : ''} — sorting ${((m.sort || 0) / 1000).toFixed(1)} · reading + tracking check ${((m.read || 0) / 1000).toFixed(1)}` +
     ` · ${b.read.escalated ? 'medium, then high (something looked unsure)' : (b.read.effort || 'high') + ' effort'}${b.read.careful ? ' · careful model' : ''}</div>`;
   if (b.sheetRow) h += `<div class="muted">✓ In the sheet at row ${b.sheetRow} · ${b.photosLinked ? 'photos linked in AV–BJ' : (S.linking === b.id || LINK.q.includes(b.id) ? 'saving photos…' : (b.linkError ? 'photos not saved yet — tap “Save photos” below' : 'photos waiting to save'))}.</div>`;
   return h + `</div></article>`;
