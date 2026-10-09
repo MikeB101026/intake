@@ -204,7 +204,7 @@ button{cursor:pointer}
     <label>Access code<input type="password" id="setToken" placeholder="the INTAKE_TOKEN you chose" autocomplete="off"></label>
     <div class="row-actions"><button class="btn primary" id="setSave" type="button">Save and test</button><button class="btn" id="setClose" type="button">Close</button></div>
     <div id="setStatus" class="muted"></div>
-    <label class="check"><input type="checkbox" id="setSharp"> Sharper photos (slower shutter; use if labels read badly)</label>
+    <label class="check"><input type="checkbox" id="setSharp"> Full-quality photos from the real camera (recommended; turn off only if the shutter feels too slow — then photos are grainier preview frames)</label>
     <label class="check"><input type="checkbox" id="setAutoSort"> Sort and read as soon as I tap DONE in the camera</label>
     <label class="check"><input type="checkbox" id="setAutoSend"> Send clean boxes to the sheet automatically (anything with a warning still waits for you)</label>
     <label class="check"><input type="checkbox" id="setHigh"> Always read at high effort (slower; normally it reads at medium and switches to high by itself when anything looks unsure)</label>
@@ -394,7 +394,7 @@ const S = {
   boxes: new Map(), photos: new Map(), urls: new Map(), day: TODAY(), expanded: new Set(), confirmDel: null,
   readQ: [], reading: null, watch: null, plan: null, busy: false, lb: null,
   cfg: { url: ls.get('backendUrl') || '', token: ls.get('backendToken') || '' },
-  sharp: ls.get('sharp') === '1', autoSort: ls.get('autoSort') !== '0',
+  sharp: ls.get('sharp2') !== '0', autoSort: ls.get('autoSort') !== '0',
   autoSend: ls.get('autoSend') !== '0', alwaysHigh: ls.get('alwaysHigh') === '1',
   bv: 0, sortP: new Map(), held: new Set(), sending: new Set(), linking: null
 };
@@ -536,6 +536,21 @@ async function openCamera(targetBoxId) {
     const caps = CAM.track.getCapabilities ? CAM.track.getCapabilities() : {};
     $('#torchBtn').hidden = !caps.torch;
     CAM.ic = ('ImageCapture' in window) ? new ImageCapture(CAM.track) : null;
+    // Keep the lens focused and exposed for whatever it's pointed at (labels up close, boxes further away).
+    const adv = {};
+    if ((caps.focusMode || []).includes('continuous')) adv.focusMode = 'continuous';
+    if ((caps.exposureMode || []).includes('continuous')) adv.exposureMode = 'continuous';
+    if ((caps.whiteBalanceMode || []).includes('continuous')) adv.whiteBalanceMode = 'continuous';
+    if (Object.keys(adv).length) { try { await CAM.track.applyConstraints({ advanced: [adv] }); } catch (e) {} }
+    // Full-resolution stills: ask the camera what its biggest photo is, once.
+    CAM.photoSettings = null;
+    if (CAM.ic && CAM.ic.getPhotoCapabilities) {
+      try {
+        const pc = await CAM.ic.getPhotoCapabilities();
+        if (pc && pc.imageWidth && pc.imageWidth.max) CAM.photoSettings = { imageWidth: pc.imageWidth.max, imageHeight: pc.imageHeight && pc.imageHeight.max };
+        CAM.fillModes = (pc && pc.fillLightMode) || [];        // no automatic flash: it glares on glossy labels
+      } catch (e) {}
+    }
     msg.hidden = true;
     try { CAM.wake = await navigator.wakeLock?.request('screen'); } catch (e) {}
   } catch (e) {
@@ -551,8 +566,28 @@ function closeCamera() {
   try { CAM.wake && CAM.wake.release(); } catch (e) {}
   $('#cam').hidden = true;
 }
-async function grab() {
-  if (S.sharp && CAM.ic) { try { return await CAM.ic.takePhoto(); } catch (e) {} }
+/* Each shot is a real camera photo (full resolution, the phone's own focus, sharpening and noise
+   cleanup), not a frame of the live preview, which is small and grainy. Shots are taken one after
+   another so fast tapping can't make the camera refuse; if a still takes too long or fails, the
+   preview frame is used for that one shot instead. */
+CAM.stillQ = Promise.resolve();
+function grab() {
+  const job = CAM.stillQ.then(async () => {
+    if (S.sharp && CAM.ic && CAM.track && CAM.track.readyState === 'live') {
+      try {
+        const ps = Object.assign({}, CAM.photoSettings || {});
+        if ((CAM.fillModes || []).includes('off') && !CAM.torch) ps.fillLightMode = 'off';
+        const still = CAM.ic.takePhoto(Object.keys(ps).length ? ps : undefined);
+        const blob = await Promise.race([still, new Promise((_, rej) => setTimeout(() => rej(new Error('slow')), 3000))]);
+        if (blob && blob.size) return blob;
+      } catch (e) {}
+    }
+    return frameGrab();
+  });
+  CAM.stillQ = job.catch(() => {});
+  return job;
+}
+function frameGrab() {
   const v = $('#video');
   if (!v.videoWidth) throw new Error('no frame');
   const c = document.createElement('canvas'); c.width = v.videoWidth; c.height = v.videoHeight;
@@ -1380,7 +1415,7 @@ async function storageInfo() {
 }
 $('#gearBtn').addEventListener('click', openSettings);
 $('#setClose').addEventListener('click', () => { $('#settings').hidden = true; });
-$('#setSharp').addEventListener('change', e => { S.sharp = e.target.checked; ls.set('sharp', S.sharp ? '1' : '0'); });
+$('#setSharp').addEventListener('change', e => { S.sharp = e.target.checked; ls.set('sharp2', S.sharp ? '1' : '0'); });
 $('#setAutoSort').addEventListener('change', e => { S.autoSort = e.target.checked; ls.set('autoSort', S.autoSort ? '1' : '0'); });
 $('#setAutoSend').addEventListener('change', e => { S.autoSend = e.target.checked; ls.set('autoSend', S.autoSend ? '1' : '0'); if (S.autoSend) autoSend(); });
 $('#setHigh').addEventListener('change', e => { S.alwaysHigh = e.target.checked; ls.set('alwaysHigh', S.alwaysHigh ? '1' : '0'); });
