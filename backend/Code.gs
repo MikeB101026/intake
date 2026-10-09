@@ -12,7 +12,8 @@
  *   INTAKE_TOKEN       the access code the phone app uses        (required)
  *   MODEL              optional, default claude-opus-5-5   (reads labels and contents)
  *   FAST_MODEL         optional, default claude-haiku-5-5  (sorts photos)
- *   SPEED              optional, "fast" = Opus fast mode (up to 2.5x faster replies, 2x the price)
+ *   SPEED              optional, default "fast" = Opus fast mode (up to 2.5x faster replies, 2x the price);
+ *                      set it to "normal" to switch fast mode off
  *
  * Update: paste this whole file over Code.gs → Save → Deploy → Manage deployments → ✏️ Edit
  *         → Version: New version → Deploy. The /exec address stays the same.
@@ -97,7 +98,7 @@ function callClaude_(req) {
   };
   // The rules never change, so they sit in a cached system block: after the first box they cost a fraction and read faster.
   if (req.system) body.system = [{ type: 'text', text: String(req.system), cache_control: { type: 'ephemeral' } }];
-  if (!fast && PROPS.getProperty('SPEED') === 'fast' && /opus/.test(model)) body.speed = 'fast';
+  if (!fast && (PROPS.getProperty('SPEED') || 'fast') === 'fast' && /opus/.test(model)) body.speed = 'fast';
   const j = post_(body);
   if (j.stop_reason === 'refusal') throw new Error('Claude declined to read these photos.');
   const text = (j.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
