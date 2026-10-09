@@ -42,7 +42,10 @@ button{cursor:pointer}
 .notice{margin-top:12px;padding:10px 12px;border-radius:8px;background:var(--info-bg);color:var(--info-ink);font-size:15px}
 .notice.bad{background:var(--bad-bg);color:var(--bad-ink)}
 .notice button{margin-left:8px;border:0;background:none;text-decoration:underline;color:inherit;padding:0}
-.start{margin-top:14px;display:grid;grid-template-columns:2fr 1fr;gap:10px}
+.start{margin-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.start .wide{grid-column:1 / -1}
+.nextphone{min-height:90px}
+.nextphone .big{font-size:28px}
 .shot{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;min-height:120px;border-radius:12px;border:2px solid var(--ink);background:var(--card);text-align:center;padding:10px;cursor:pointer}
 .shot.lab{background:var(--tape);color:var(--tape-ink);border-color:var(--tape)}
 .shot .big{font:700 34px/1 var(--f-display);letter-spacing:.05em}
@@ -161,11 +164,13 @@ button{cursor:pointer}
   <div id="notice" class="notice" hidden></div>
 
   <section class="start">
-    <button class="shot lab" id="camBtn" type="button"><span class="big">CAMERA</span><span class="small">this box: label + contents, any order</span></button>
+    <label class="shot lab wide" for="nativeCam"><span class="big">PHONE CAMERA</span><span class="small">your phone's own camera — best quality · one photo per tap</span></label>
+    <button class="shot" id="camBtn" type="button"><span class="big">QUICK CAM</span><span class="small">in-app, fast bursts</span></button>
     <label class="shot" for="pickAll"><span class="big">PHOTOS</span><span class="small">from the gallery</span></label>
   </section>
   <div id="curBar" class="pending" hidden>
     <div class="pending-head"><b id="curText">Box #1</b><button class="btn primary" id="curFinish" type="button">Finish this box →</button></div>
+    <label class="shot lab nextphone" for="nativeCam"><span class="big">+ NEXT PHOTO</span><span class="small">phone camera · label or contents, this same box</span></label>
     <div class="thumbs" id="curThumbs"></div>
   </div>
   <div id="pending" class="pending" hidden>
@@ -182,7 +187,7 @@ button{cursor:pointer}
     <div class="stats" id="dayStats"></div>
   </div>
   <div class="boxes" id="boxes"></div>
-  <div class="empty" id="emptyList">No boxes yet. Tap <b>CAMERA</b> and shoot: a box's shipping label, then what's inside it, then the next label.</div>
+  <div class="empty" id="emptyList">No boxes yet. Tap <b>PHONE CAMERA</b> and shoot the box's shipping label and what's inside it, one photo per tap (<b>+ NEXT PHOTO</b> for each one), then <b>Finish this box</b>.</div>
 </div>
 
 <div class="bar">
@@ -243,6 +248,7 @@ button{cursor:pointer}
 </div>
 
 <input type="file" id="pickAll" accept="image/*" multiple hidden>
+<input type="file" id="nativeCam" accept="image/*" capture="environment" hidden>
 
 <script>
 (function () {
@@ -650,6 +656,32 @@ $('#camDone').addEventListener('click', async () => {
   else finishCurrent();
 });
 document.addEventListener('keydown', e => { if (!$('#cam').hidden && (e.key === ' ' || e.key === 'Enter' || e.key === 'AudioVolumeUp' || e.key === 'AudioVolumeDown')) { e.preventDefault(); shoot(); } });
+
+/* ================= phone camera (the phone's own camera app: same quality as normal photos) =================
+   Opens Samsung's (or any phone's) camera app for one shot; the photo comes straight back into the
+   CURRENT box, is saved on the phone first, then sorted and read ahead like an in-app shot. */
+$('#nativeCam').addEventListener('change', async e => {
+  const files = [...(e.target.files || [])]; e.target.value = '';
+  if (!files.length) return;                                         // camera closed without a photo
+  showProg('Saving photo…');
+  try {
+    const boxId = await currentBox();
+    for (const f of files) {
+      const t = (await shotTime(f)) || Date.now();
+      const { blob, w, h } = await scaleTo(f, 2400, 0.92);
+      const p = { id: uid(), t, blob, w, h, split: false, box: boxId, kind: null, src: 'phone' };
+      await putPhoto(p); S.photos.set(p.id, p);
+      await attachToBox(boxId, [p]);
+      preSort(p);                                                    // label / inside, then read ahead
+    }
+    const b = S.boxes.get(boxId);
+    showProg(`Box #${b ? b.seq : ''}: ${b ? b.photos.length : ''} photo${b && b.photos.length === 1 ? '' : 's'} — tap + NEXT PHOTO, or “Finish this box” when it’s complete.`);
+  } catch (err) {
+    showProg('');
+    notice(/hei[cf]/i.test(files.map(f => f.type + f.name).join(' ')) ? 'That photo is HEIC. In the Samsung camera settings turn off “High efficiency pictures”, then try again.' : 'That photo couldn’t be saved. Take it again.', true);
+  }
+  render();
+});
 
 /* ================= gallery import ================= */
 $('#pickAll').addEventListener('change', async e => {
