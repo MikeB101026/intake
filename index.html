@@ -639,7 +639,10 @@ function camBoxLabel() {
   const nextSeq = 1 + Math.max(0, ...allBoxes().filter(x => x.day === TODAY()).map(x => x.seq || 0));
   $('#camBox').textContent = 'BOX #' + (b ? b.seq : nextSeq);
 }
-$('#camBtn').addEventListener('click', () => { openCamera(null); camBoxLabel(); });
+$('#camBtn').addEventListener('click', () => {
+  if (window.AndroidIntake) { window.AndroidIntake.openCamera(); return; }   // Android app: its native camera
+  openCamera(null); camBoxLabel();
+});
 $('#shutter').addEventListener('click', shoot);
 $('#video').addEventListener('click', shoot);
 $('#newBoxBtn').addEventListener('click', async () => { await CAM.queue; finishCurrent(); });
@@ -682,6 +685,31 @@ $('#nativeCam').addEventListener('change', async e => {
   }
   render();
 });
+
+/* ================= native Android app bridge =================
+   Inside the 700 Intake Android app, the camera is native (the phone's own processing). Each photo
+   arrives here as soon as it's saved and goes into the CURRENT box, in order; NEXT BOX and DONE
+   finish the box exactly like the buttons here do. */
+let nativeQ = Promise.resolve();
+window.__nativeShot = url => {
+  nativeQ = nativeQ.then(async () => {
+    try {
+      const r = await fetch(url, { cache: 'no-store' });
+      if (!r.ok) throw new Error('missing');
+      const raw = await r.blob();
+      const boxId = await currentBox();
+      const { blob, w, h } = await scaleTo(raw, 2400, 0.92);
+      const p = { id: uid(), t: Date.now(), blob, w, h, split: false, box: boxId, kind: null, src: 'native' };
+      await putPhoto(p); S.photos.set(p.id, p);
+      await attachToBox(boxId, [p]);
+      preSort(p);                                                    // label / inside, then read ahead
+      render();
+    } catch (e) { notice('A photo from the camera couldn’t be saved. Take it again.', true); }
+  });
+};
+window.__nativeNextBox = () => { nativeQ = nativeQ.then(() => finishCurrent()); };
+window.__nativeDone = () => { nativeQ = nativeQ.then(() => { finishCurrent(); render(); }); };
+window.__isNativeApp = !!window.AndroidIntake;
 
 /* ================= gallery import ================= */
 $('#pickAll').addEventListener('change', async e => {
