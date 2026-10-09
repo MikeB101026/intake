@@ -1,7 +1,10 @@
 /**
- * 700 Islands Intake — backend v2 (Google Apps Script web app).
+ * 700 Islands Intake — backend v3 (Google Apps Script web app).
  *
- * What's new in v2 (speed):
+ * v3: the app trusts "append" with checkDupes only from v3 or later, because an earlier v2 build
+ * ignored checkDupes. Fast mode switches itself off for an hour if the account can't use it.
+ *
+ * Speed:
  *  - Sorting (label vs inside) runs on Claude Haiku 5.5: about a second per photo instead of several.
  *  - The long rules prompt is sent as a cached system block, so every read after the first skips re-reading it.
  *  - "warm" pre-loads that cache when the camera opens.
@@ -31,7 +34,7 @@ const DEFAULTS = {
 const PROPS = PropertiesService.getScriptProperties();
 const prop = k => PROPS.getProperty(k) || DEFAULTS[k] || '';
 const MON = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-const VERSION = 2;
+const VERSION = 3;
 
 function doGet() { return out({ ok: true, app: '700 Islands Intake backend', v: VERSION }); }
 
@@ -76,7 +79,10 @@ function post_(body) {
   const code = res.getResponseCode();
   let j = {};
   try { j = JSON.parse(res.getContentText()); } catch (e) {}
-  if (code === 429 && body.speed === 'fast') { delete body.speed; return post_(body); }   // fast-mode limit: retry at normal speed
+  if (code !== 200 && body.speed === 'fast') {            // fast mode is a research preview: never let it break a read
+    if (code !== 429) CacheService.getScriptCache().put('fastOff', '1', 3600);   // not available to this account: off for an hour
+    delete body.speed; return post_(body);
+  }
   if (code === 429) throw new Error('Claude is busy (rate limit). Try again in a minute.');
   if (code === 401) throw new Error('The Anthropic API key was rejected. Check ANTHROPIC_API_KEY.');
   if (code === 400 && /credit|billing|balance/i.test(JSON.stringify(j))) throw new Error('Your Anthropic account is out of credit. Add credit at console.anthropic.com.');
@@ -98,7 +104,7 @@ function callClaude_(req) {
   };
   // The rules never change, so they sit in a cached system block: after the first box they cost a fraction and read faster.
   if (req.system) body.system = [{ type: 'text', text: String(req.system), cache_control: { type: 'ephemeral' } }];
-  if (!fast && (PROPS.getProperty('SPEED') || 'fast') === 'fast' && /opus/.test(model)) body.speed = 'fast';
+  if (!fast && (PROPS.getProperty('SPEED') || 'fast') === 'fast' && /opus/.test(model) && !CacheService.getScriptCache().get('fastOff')) body.speed = 'fast';
   const j = post_(body);
   if (j.stop_reason === 'refusal') throw new Error('Claude declined to read these photos.');
   const text = (j.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');

@@ -413,8 +413,8 @@ const SIZE = { label: 1568, inside: 800, sort: 512 };   // contents only need th
 let bvP = null;
 function backendV() {                                                  // asked once per app start, shared by every caller
   if (S.bv) return Promise.resolve(S.bv);
-  if (ls.get('bv:' + S.cfg.url) === '2') return Promise.resolve(S.bv = 2);   // known-new backend: skip the round trip
-  return bvP || (bvP = api('ping').then(j => { S.bv = j.v || 1; if (S.bv >= 2) ls.set('bv:' + S.cfg.url, '2'); return S.bv; }, () => { bvP = null; return 1; }));
+  if (+ls.get('bv3:' + S.cfg.url) >= 3) return Promise.resolve(S.bv = +ls.get('bv3:' + S.cfg.url));   // known v3+ backend: skip the round trip
+  return bvP || (bvP = api('ping').then(j => { S.bv = j.v || 1; if (S.bv >= 3) ls.set('bv3:' + S.cfg.url, String(S.bv)); return S.bv; }, () => { bvP = null; return 1; }));
 }
 /** o: {prompt, images:[{blob, max}], effort, careful, fast, system} */
 async function claude(o) {
@@ -946,7 +946,7 @@ async function planSend(only, auto) {
   barMsg(`Sending ${list.length} box${list.length === 1 ? '' : 'es'}…`);
   try {
     let hits;
-    if (await backendV() >= 2) {                      // new backend: repeat check + write in one round trip
+    if (await backendV() >= 3) {                      // v3+ backend: repeat check + write in one round trip (an early v2 ignored checkDupes)
       const r = await api('append', { rows: rowsOf(list), checkDupes: true });
       if (!r.dupes) return await finishSend(list, r.placed);
       hits = r.dupes;
@@ -1303,7 +1303,7 @@ $('#setSave').addEventListener('click', async () => {
   const st = $('#setStatus'); st.textContent = 'Testing…';
   try {
     const j = await api('ping');
-    S.bv = j.v || 1;
+    S.bv = j.v || 1; if (S.bv >= 3) ls.set('bv3:' + S.cfg.url, String(S.bv));
     st.textContent = `Connected. Model: ${j.model}` + (j.fastModel ? `, sorting with ${j.fastModel}` : ' (old backend: update Code.gs for full speed)') +
       `. Sheet tab: ${j.tab}, next row about ${j.nextRow}.` + (j.hasKey ? '' : ' The Anthropic API key is NOT set in the backend yet.');
     loadWatch().catch(() => {});
