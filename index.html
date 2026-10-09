@@ -80,7 +80,8 @@ button{cursor:pointer}
 .st.sent{background:var(--ink);color:var(--card)}
 .st.check,.st.dirty{background:var(--flag-bg);color:var(--flag-ink)}
 .st.error{background:var(--bad-bg);color:var(--bad-ink)}
-.st.reading,.st.queued,.st.unread{background:var(--info-bg);color:var(--info-ink)}
+.st.reading,.st.queued,.st.unread,.st.sending{background:var(--info-bg);color:var(--info-ink)}
+.btn.done{background:var(--ok-bg);color:var(--ok-ink);border-color:var(--ok-bg);opacity:1}
 .chips{display:flex;flex-wrap:wrap;gap:5px;padding:0 12px 10px}
 .chip{font-size:12px;font-weight:600;padding:3px 7px;border-radius:5px;background:var(--line2);color:var(--muted)}
 .chip.flag{background:var(--flag-bg);color:var(--flag-ink)}
@@ -381,7 +382,7 @@ const S = {
   cfg: { url: ls.get('backendUrl') || '', token: ls.get('backendToken') || '' },
   sharp: ls.get('sharp') === '1', autoSort: ls.get('autoSort') !== '0',
   autoSend: ls.get('autoSend') !== '0', alwaysHigh: ls.get('alwaysHigh') === '1',
-  bv: 0, sortP: new Map(), held: new Set()
+  bv: 0, sortP: new Map(), held: new Set(), sending: new Set(), linking: null
 };
 const photoUrl = id => {
   if (S.urls.has(id)) return S.urls.get(id);
@@ -899,6 +900,7 @@ function isDirty(b) {
   return cells(b).slice(0, 7).some((v, i) => caps(v) !== caps(b.sentCells[i]));
 }
 function viewStatus(b) {
+  if (S.sending.has(b.id)) return 'sending';
   if (b.sheetRow) return isDirty(b) ? 'dirty' : 'sent';
   if (S.active.has(b.id)) return 'reading';
   if (S.readQ.some(j => j.id === b.id)) return 'queued';
@@ -906,7 +908,7 @@ function viewStatus(b) {
   if (b.status !== 'read') return 'unread';
   return reasons(b).length && !b.ok ? 'check' : 'ready';
 }
-const STATUS_TEXT = { unread: 'Not read', queued: 'Waiting', reading: 'Reading…', error: 'Error', check: 'Check', ready: 'Ready', sent: 'In sheet', dirty: 'Changed' };
+const STATUS_TEXT = { sending: 'Sending…', unread: 'Not read', queued: 'Waiting', reading: 'Reading…', error: 'Error', check: 'Check', ready: 'Ready', sent: 'In sheet', dirty: 'Changed' };
 function cells(b, oneLine) {
   const r = b.row;
   const contents = oneLine ? String(r.contents || '').replace(/\s*\n\s*/g, ' ').replace(/\s*\/\/\/\s*/g, ' /// ').trim()
@@ -931,22 +933,36 @@ async function loadWatch() {
 /* ================= sending ================= */
 const sendable = () => allBoxes().filter(b => b.day === S.day && !b.sheetRow && viewStatus(b) === 'ready').sort((a, b) => a.seq - b.seq);
 const dirtyBoxes = () => allBoxes().filter(b => b.day === S.day && b.sheetRow && isDirty(b));
+/* ONE TAP: checks for repeats, writes the rows, then saves the photos in the background.
+   The boxes lock as "Sending…" the moment it's tapped, so there's nothing to tap twice. */
 async function planSend(only, auto) {
-  const list = only || sendable(); if (!list.length || S.busy) return;
-  S.busy = true; render(); barMsg('Checking the sheet…');
+  const list = (only || sendable()).filter(b => !b.sheetRow && !S.sending.has(b.id)); if (!list.length || S.busy) return;
+  S.busy = true; for (const b of list) S.sending.add(b.id); render();
+  barMsg(`Sending ${list.length} box${list.length === 1 ? '' : 'es'}…`);
   try {
-    const { hits } = await api('dupes', { trackings: list.map(b => b.row.tracking) });
+    let hits;
+    if (await backendV() >= 2) {                      // new backend: repeat check + write in one round trip
+      const r = await api('append', { rows: rowsOf(list), checkDupes: true });
+      if (!r.dupes) return await finishSend(list, r.placed);
+      hits = r.dupes;
+    } else hits = (await api('dupes', { trackings: list.map(b => b.row.tracking) })).hits;
     const dupes = list.filter(b => hits[b.row.tracking]).map(b => ({ b, row: hits[b.row.tracking] }));
-    S.busy = false;
-    if (dupes.length && auto) {                       // automatic sending never decides about repeats: hold it for the operator
+    if (!dupes.length) return await executeSend(list);
+    for (const d of dupes) S.sending.delete(d.b.id);
+    if (auto) {                                       // automatic sending never decides about repeats: hold it for the operator
       for (const d of dupes) { S.held.add(d.b.id); notice(`Box #${d.b.seq}: tracking ${d.b.row.tracking} is already in the sheet at row ${d.row}. Check it, then tap Send.`, true); }
       const rest = list.filter(b => !hits[b.row.tracking]);
-      if (rest.length) await executeSend(rest); else { barMsg(''); render(); autoSend(); }
-      return;
+      if (rest.length) return await executeSend(rest);
+      S.busy = false; barMsg(''); render(); autoSend(); return;
     }
-    if (dupes.length) { S.plan = { list, dupes }; renderPlan(); barMsg(''); render(); return; }
-    await executeSend(list);
-  } catch (e) { S.busy = false; barMsg(''); notice(e.message, true); render(); }
+    for (const b of list) S.sending.delete(b.id);
+    S.busy = false; S.plan = { list, dupes }; renderPlan(); barMsg(''); render();
+  } catch (e) { sendFailed(list, e); }
+}
+const rowsOf = list => list.map(b => ({ id: b.id, day: b.day, cells: cells(b).slice(0, 7) }));
+function sendFailed(list, e) {
+  for (const b of list) S.sending.delete(b.id);
+  S.busy = false; barMsg(''); notice(e.message, true); S.autoSendFails = (S.autoSendFails || 0) + 1; render();
 }
 /* Item 7: a box that read clean (no warnings at all) goes to the sheet on its own, one at a time. */
 function autoSend() {
@@ -956,37 +972,64 @@ function autoSend() {
 }
 async function executeSend(list) {
   if (!list.length) return;
-  S.busy = true; S.plan = null; renderPlan(); render(); barMsg(`Writing ${list.length} row${list.length === 1 ? '' : 's'}…`);
-  try {
-    const rows = list.map(b => ({ id: b.id, day: b.day, cells: cells(b).slice(0, 7) }));
-    const { placed } = await api('append', { rows });
-    S.autoSendFails = 0;
-    for (const p of placed) await patchBox(p.id, x => { x.sheetRow = p.row; x.status = 'sent'; x.sentCells = cells(x); x.sentAt = Date.now(); });
-    const rs = placed.map(p => p.row);
-    barMsg(`Sent ${placed.length} · sheet rows ${Math.min(...rs)}–${Math.max(...rs)} · saving photos…`);
-    for (const p of placed) await linkPhotos(S.boxes.get(p.id));
-    barMsg(`Sent ${placed.length} · sheet rows ${Math.min(...rs)}–${Math.max(...rs)} · photos linked`);
-  } catch (e) { barMsg(''); notice(e.message, true); S.autoSendFails = (S.autoSendFails || 0) + 1; }
-  finally { S.busy = false; render(); if ((S.autoSendFails || 0) < 3) autoSend(); }
+  S.busy = true; S.plan = null; for (const b of list) S.sending.add(b.id); renderPlan(); render();
+  barMsg(`Writing ${list.length} row${list.length === 1 ? '' : 's'}…`);
+  try { await finishSend(list, (await api('append', { rows: rowsOf(list) })).placed); }
+  catch (e) { sendFailed(list, e); }
 }
-/* Photos → Drive folder, private links in AV–BJ of the box's row (labels first, then inside; max 15). */
+async function finishSend(list, placed) {
+  S.autoSendFails = 0;
+  for (const p of placed) await patchBox(p.id, x => { x.sheetRow = p.row; x.status = 'sent'; x.sentCells = cells(x); x.sentAt = Date.now(); });
+  for (const b of list) S.sending.delete(b.id);
+  S.busy = false;
+  const rs = placed.map(p => p.row), seqs = placed.map(p => '#' + (S.boxes.get(p.id) || {}).seq).join(', ');
+  const where = rs.length === 1 ? `row ${rs[0]}` : `rows ${Math.min(...rs)}–${Math.max(...rs)}`;
+  barMsg(`✓ Sent ${seqs} → ${where}`);
+  notice(`✓ Box ${seqs} is in the sheet (${where}). Photos are saving in the background.`);
+  setTimeout(() => { if ($('#notice').textContent.startsWith('✓')) notice(null); }, 6000);
+  for (const p of placed) queueLinks(p.id);
+  render();
+  autoSend();
+}
+/* Photos → Drive folder, private links in AV–BJ of the box's row (labels first, then inside; max 15).
+   Runs by itself after every send, one box at a time, and retries on its own — nothing to tap. */
+const LINK = { q: [], running: false };
+function queueLinks(id) { if (!LINK.q.includes(id)) LINK.q.push(id); runLinks(); }
+async function runLinks() {
+  if (LINK.running) return;
+  LINK.running = true;
+  try {
+    while (LINK.q.length) {
+      const id = LINK.q.shift(), b = S.boxes.get(id);
+      if (!b || !b.sheetRow || b.photosLinked) continue;
+      let err = null;
+      for (const wait of [0, 2000, 6000, 15000]) {           // up to 4 tries before asking for a tap
+        if (wait) await new Promise(r => setTimeout(r, wait));
+        try { await linkPhotos(S.boxes.get(id)); err = null; break; } catch (e) { err = e; }
+      }
+      if (err) { await patchBox(id, x => { x.linkError = err.message; }); notice(`Row ${b.sheetRow} is in the sheet, but its photos didn’t save (${err.message}). Tap “Save photos” at the bottom to try again.`, true); }
+    }
+  } finally { LINK.running = false; render(); }
+}
 async function linkPhotos(b) {
   if (!b || !b.sheetRow || b.photosLinked) return;
+  const ph = b.photos.map(id => S.photos.get(id)).filter(Boolean);
+  const ordered = [...ph.filter(p => p.kind === 'label'), ...ph.filter(p => p.kind !== 'label')].slice(0, 15);
+  if (!ordered.length) { await patchBox(b.id, x => { x.photosLinked = true; }); return; }
+  S.linking = b.id; render();
   try {
-    const ph = b.photos.map(id => S.photos.get(id)).filter(Boolean);
-    const ordered = [...ph.filter(p => p.kind === 'label'), ...ph.filter(p => p.kind !== 'label')].slice(0, 15);
     let nl = 0, ni = 0;
-    const photos = [];
-    for (const p of ordered) {
-      const label = p.kind === 'label' ? `LABEL ${++nl}` : `INSIDE ${++ni}`;
-      photos.push({ label, name: `${b.day} box ${b.seq} ${caps(b.row.customer).slice(0, 30)} ${label}.jpg`, b64: await toApiB64(p.blob) });
-    }
-    if (!photos.length) return;
+    // Same picture sizes the reading used, so they're already encoded: nothing to redo on the phone.
+    const photos = await Promise.all(ordered.map(p => {
+      const lab = p.kind === 'label', label = lab ? `LABEL ${++nl}` : `INSIDE ${++ni}`;
+      return toApiB64(p.blob, lab ? SIZE.label : SIZE.inside).then(b64 => ({ label, name: `${b.day} box ${b.seq} ${caps(b.row.customer).slice(0, 30)} ${label}.jpg`, b64 }));
+    }));
     await api('photos', { row: b.sheetRow, expectTracking: b.row.tracking, photos });
-    await patchBox(b.id, x => { x.photosLinked = true; });
+    await patchBox(b.id, x => { x.photosLinked = true; delete x.linkError; });
     for (const p of ph) { B64.delete(p.blob); CROPS.delete(p.blob); }      // free the phone's memory once a box is done
-  } catch (e) { notice(`Row ${b.sheetRow} is in the sheet, but its photos couldn’t be saved: ${e.message}`, true); }
+  } finally { S.linking = null; }
 }
+const unlinked = () => allBoxes().filter(b => b.day === S.day && b.sheetRow && !b.photosLinked && b.photos.length && !LINK.q.includes(b.id) && S.linking !== b.id);
 async function updateRows() {
   const list = dirtyBoxes(); if (!list.length || S.busy) return;
   S.busy = true; render();
@@ -1027,7 +1070,7 @@ function cardHtml(b) {
   const vs = viewStatus(b), row = b.row, ex = S.expanded.has(b.id);
   const last4 = row.tracking ? '…' + String(row.tracking).replace(/\s/g, '').slice(-4) : '';
   const sub = [last4, row.weight !== '' && row.weight != null ? row.weight + ' lb' : '', row.shipper].filter(Boolean).join(' · ') || `${b.photos.length} photo${b.photos.length === 1 ? '' : 's'}`;
-  const st = vs === 'sent' ? `Row ${b.sheetRow}` : STATUS_TEXT[vs];
+  const st = vs === 'sent' ? `✓ Row ${b.sheetRow}` : STATUS_TEXT[vs];
   const watch = watchHits(b), rs = reasons(b);
   const chips = [...watch.map(w => `<span class="chip bad">${esc(w)}</span>`), ...b.flags.map(f => `<span class="chip flag">${esc(f)}</span>`), ...(ex ? b.badges.map(x => `<span class="chip">${esc(x)}</span>`) : [])].join('');
   let h = `<article class="card" data-id="${esc(b.id)}"><button type="button" class="card-top" data-act="toggle" aria-expanded="${ex}">
@@ -1057,7 +1100,7 @@ function cardHtml(b) {
   h += `<div class="row-actions">
     <button type="button" class="btn small" data-act="cam">+ Camera</button>
     <button type="button" class="btn small" data-act="reread" ${ph.length ? '' : 'disabled'}>Read again</button>
-    ${vs === 'ready' ? '<button type="button" class="btn small primary" data-act="send1">Send to sheet</button>' : ''}
+    ${vs === 'ready' && !S.busy ? '<button type="button" class="btn small primary" data-act="send1">Send to sheet</button>' : ''}
     ${vs === 'check' ? '<button type="button" class="btn small tape" data-act="ok">Looks good</button>' : ''}
     ${vs === 'dirty' ? '<button type="button" class="btn small tape" data-act="upd">Update sheet row</button>' : ''}
     <button type="button" class="btn small danger" data-act="del">Delete</button></div>`;
@@ -1066,8 +1109,7 @@ function cardHtml(b) {
   const m = b.read && b.read.ms;
   if (m) h += `<div class="muted">Read in ${(m.total / 1000).toFixed(1)} s — sorting ${((m.sort || 0) / 1000).toFixed(1)} · reading + tracking check ${((m.read || 0) / 1000).toFixed(1)}` +
     ` · ${b.read.escalated ? 'medium, then high (something looked unsure)' : (b.read.effort || 'high') + ' effort'}${b.read.careful ? ' · careful model' : ''}</div>`;
-  if (b.sheetRow) h += `<div class="muted">In the sheet at row ${b.sheetRow}${b.photosLinked ? ' · photos linked in AV–BJ' : ''}.</div>`;
-  if (b.sheetRow && !b.photosLinked) h += `<div class="row-actions"><button type="button" class="btn small" data-act="links">Link photos in sheet</button></div>`;
+  if (b.sheetRow) h += `<div class="muted">✓ In the sheet at row ${b.sheetRow} · ${b.photosLinked ? 'photos linked in AV–BJ' : (S.linking === b.id || LINK.q.includes(b.id) ? 'saving photos…' : (b.linkError ? 'photos not saved yet — tap “Save photos” below' : 'photos waiting to save'))}.</div>`;
   return h + `</div></article>`;
 }
 const sig = new Map();
@@ -1100,10 +1142,15 @@ function renderList() {
   }
 }
 function renderBar() {
-  const n = sendable().length, d = dirtyBoxes().length, btn = $('#sendBtn');
-  btn.textContent = S.busy ? 'Working…' : (n ? `Send ${n} to sheet` : (d ? `Update ${d} changed row${d === 1 ? '' : 's'}` : 'Nothing ready to send'));
-  btn.disabled = S.busy || (!n && !d);
-  btn.dataset.mode = n ? 'send' : (d ? 'update' : '');
+  const n = sendable().length, d = dirtyBoxes().length, u = unlinked().length, btn = $('#sendBtn');
+  const sentToday = allBoxes().some(b => b.day === S.day && b.sheetRow);
+  const mode = S.busy ? '' : (n ? 'send' : (d ? 'update' : (u ? 'photos' : '')));
+  btn.textContent = S.busy ? `Sending ${S.sending.size || ''}…`.replace('  ', ' ')
+    : ({ send: `Send ${n} to sheet`, update: `Update ${d} changed row${d === 1 ? '' : 's'}`, photos: `Save photos for ${u} row${u === 1 ? '' : 's'}` }[mode]
+      || (sentToday ? '✓ All sent' : 'Nothing ready to send'));
+  btn.disabled = !mode;
+  btn.classList.toggle('done', !mode && !S.busy && sentToday);
+  btn.dataset.mode = mode;
 }
 function renderPlan() {
   const el = $('#plan');
@@ -1138,7 +1185,12 @@ $('#pendClearYes').addEventListener('click', async () => {
   render();
 });
 $('#daySel').addEventListener('change', e => { S.day = e.target.value; render(); });
-$('#sendBtn').addEventListener('click', () => { if ($('#sendBtn').dataset.mode === 'update') updateRows(); else planSend(); });
+$('#sendBtn').addEventListener('click', () => {
+  const m = $('#sendBtn').dataset.mode;
+  if (!m) return;
+  $('#sendBtn').dataset.mode = ''; $('#sendBtn').disabled = true;     // one tap only: locked until this finishes
+  if (m === 'update') updateRows(); else if (m === 'photos') unlinked().forEach(b => queueLinks(b.id)); else planSend();
+});
 $('#copyBtn').addEventListener('click', () => {
   const list = allBoxes().filter(b => b.day === S.day && (b.row.customer || b.row.tracking)).sort((a, b) => a.seq - b.seq);
   const tsv = list.map(b => cells(b, true).join('\t')).join('\n'), fb = $('#copyFallback');
@@ -1156,7 +1208,6 @@ document.addEventListener('click', e => {
     case 'ok': patchBox(id, x => { x.ok = true; }); break;
     case 'reread': S.held.delete(id); queueRead(id, { effort: 'high', careful: true }); break;   // "Read again" always reads at high
     case 'cam': openCamera(id); break;
-    case 'links': barMsg('Saving photos…'); linkPhotos(b).then(() => barMsg('')); break;
     case 'send1': planSend([b]); break;
     case 'upd': updateRows(); break;
     case 'del': S.confirmDel = id; render(); break;
@@ -1279,6 +1330,8 @@ $('#purgeBtn').addEventListener('click', async () => {
     // Reads cut off when the app was closed pick up again by themselves, in box order.
     for (const b of (S.resume || []).filter(x => !x.sheetRow && x.photos.length).sort((a, c) => (a.createdAt || 0) - (c.createdAt || 0))) queueRead(b.id);
     autoSend();
+    allBoxes().filter(b => b.sheetRow && !b.photosLinked && b.photos.length && !b.linkError).forEach(b => queueLinks(b.id));   // photos cut off by closing the app
+    warmCache();
   }
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) $('#camBtn').disabled = true;
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
