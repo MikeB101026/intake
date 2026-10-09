@@ -408,14 +408,13 @@ async function api(op, payload) {
   if (j.error) throw new Error(j.error);
   return j;
 }
-/* Picture sizes per job (smaller = faster): labels 1568 px (Claude's full detail), contents 1024 px, sorting 640 px. */
-const SIZE = { label: 1568, inside: 1024, sort: 640 };
-async function backendV() {
-  if (S.bv) return S.bv;
-  if (ls.get('bv:' + S.cfg.url) === '2') return (S.bv = 2);          // known-new backend: skip the extra round trip
-  try { const j = await api('ping'); S.bv = j.v || 1; } catch (e) { return 1; }
-  if (S.bv >= 2) ls.set('bv:' + S.cfg.url, '2');
-  return S.bv;
+/* Picture sizes per job (smaller = faster): labels 1568 px (Claude's full detail), contents 800 px, sorting 512 px. */
+const SIZE = { label: 1568, inside: 800, sort: 512 };   // contents only need the product to be recognisable
+let bvP = null;
+function backendV() {                                                  // asked once per app start, shared by every caller
+  if (S.bv) return Promise.resolve(S.bv);
+  if (ls.get('bv:' + S.cfg.url) === '2') return Promise.resolve(S.bv = 2);   // known-new backend: skip the round trip
+  return bvP || (bvP = api('ping').then(j => { S.bv = j.v || 1; if (S.bv >= 2) ls.set('bv:' + S.cfg.url, '2'); return S.bv; }, () => { bvP = null; return 1; }));
 }
 /** o: {prompt, images:[{blob, max}], effort, careful, fast, system} */
 async function claude(o) {
@@ -721,8 +720,10 @@ async function sortPhotos(list) {
 }
 
 /* ================= reading a box ================= */
+const READ_BUDGET_MS = 20000;
 const PARALLEL = 1;   // one box read at a time, in order (the operator's choice); inside a box the calls run side by side
-S.active = new Set();
+S.active = new Set(); S.readStart = new Map();
+setInterval(() => { if (S.active.size) readProg(); }, 1000);   // live seconds counter while a box reads
 function queueRead(id, opts) {
   if (!S.readQ.some(j => j.id === id) && !S.active.has(id)) S.readQ.push({ id, opts: opts || {} });
   patchBox(id, b => { if (b.status !== 'sent') b.status = 'queued'; b.readError = ''; });
@@ -732,7 +733,8 @@ function readProg() {
   const n = S.active.size, w = S.readQ.length;
   if (!n && !w) { if (!sorting) setTimeout(() => { if (!S.active.size && !S.readQ.length) showProg(''); }, 1500); return; }
   const cur = [...S.active].map(id => S.boxes.get(id)).filter(Boolean)[0];
-  showProg(`Reading box #${cur ? cur.seq : ''}` + (w ? ` · ${w} waiting` : '') + '… keep shooting, this runs in the background.');
+  const secs = cur && S.readStart.has(cur.id) ? ` · ${Math.round((Date.now() - S.readStart.get(cur.id)) / 1000)} s` : '';
+  showProg(`Reading box #${cur ? cur.seq : ''}${secs}` + (w ? ` · ${w} waiting` : '') + '… keep shooting, this runs in the background.');
 }
 function pump() {
   while (S.active.size < PARALLEL && S.readQ.length) {
@@ -747,6 +749,7 @@ async function readBox(id, opts) {
   const ph = b0.photos.map(pid => S.photos.get(pid)).filter(Boolean);
   if (!ph.length) return;
   const T0 = performance.now(), ms = {};
+  S.readStart.set(id, Date.now());
   const wasSent = !!b0.sheetRow;
   await patchBox(id, b => { if (!wasSent) b.status = 'reading'; b.readError = ''; });
   if (!S.watch) loadWatch().catch(() => {});
@@ -775,7 +778,9 @@ async function readBox(id, opts) {
     const t1 = performance.now();
     let r = await readOnce(b0, labels, items, first, careful);
     let escalated = false;
-    if (first !== 'high' && unsure(r)) { r = await readOnce(b0, labels, items, 'high', careful); escalated = true; }
+    // 20-second target: a second, high-effort read only when the first one left enough time for it.
+    // Otherwise the box shows "Check" with the reason, and "Read again" does the careful read on demand.
+    if (first !== 'high' && unsure(r) && performance.now() - T0 < READ_BUDGET_MS / 2) { r = await readOnce(b0, labels, items, 'high', careful); escalated = true; }
     ms.read = Math.round(performance.now() - t1);
     ms.total = Math.round(performance.now() - T0);
     const { res, verify, contents, flags } = r;
