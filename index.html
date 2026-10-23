@@ -257,12 +257,22 @@ button{cursor:pointer}
 /* ================= rules Claude reads (mirror of the project's CLAUDE.md) ================= */
 const RULES = `LABEL RULES (one row per box)
 - customer: consignee name in CAPS, copied EXACTLY as printed on THIS label. Business ship-to -> the business name. If the label carries any name other than 700 Islands, use that name only (drop "C/O 700 ISLANDS", "700 ISLAND CARGO" and the like). Only "700 Islands" plus a c/o name -> the c/o name. No name -> "NO NAME ON LABEL". Part unreadable -> the legible part + " — FIRST NAME UNREADABLE" and a flag.
-- tracking: one string, no spaces. UPS 1Z = 18 characters. FedEx = 12 digits (drop a 96/9622 prefix of the long barcode string). USPS = the full 22-digit tracking line. Amazon TBA, GOFO GFUS, Yanwen YWE, Target TLMD, OnTrac, Veho, Better Trucks: exactly as printed. An Amazon order shipped by UPS/FedEx/USPS -> the carrier number, not a TBA. No carrier tracking (freight, vendor truck) -> "DELIVERED BY <CARRIER OR VENDOR> (<PRO / BOL / REF NUMBER>)". Tracking cut off or covered -> "NOT IN FRAME — RESHOOT" and a flag. Never guess a digit: give your best reading and add the flag "VERIFY DIGITS — <which part>".
+- tracking: one string, no spaces. UPS 1Z = 18 characters. FedEx = 12 digits (drop a 96/9622 prefix of the long barcode string). USPS = the full 22-digit tracking line. Amazon TBA, GOFO GFUS, Yanwen YWE, Target TLMD, OnTrac, Veho, Better Trucks: exactly as printed. An Amazon order shipped by UPS/FedEx/USPS -> the carrier number, not a TBA. Freight with a BILL OF LADING (R+L, SAIA, ESTES, XPO, OLD DOMINION, T-FORCE, ABF, FEDEX FREIGHT, SOUTHEASTERN…) -> "DELIVERED BY <CARRIER> BOL: <NUMBER>", e.g. "DELIVERED BY R+L CARRIERS BOL: I995331177" — <NUMBER> is the carrier's PRO / tracking number on the bill of lading (usually printed under its barcode), exactly as printed; only if there is no PRO, the BOL number. Vendor truck or courier with no paperwork number -> "DELIVERED BY <VENDOR>". Tracking cut off or covered -> "NOT IN FRAME — RESHOOT" and a flag. Never guess a digit: give your best reading and add the flag "VERIFY DIGITS — <which part>".
 - weight_printed / weight_unit: the package weight exactly as printed (number only) and its unit ("lb" or "kg"). FedEx: actual weight (ACTWGT), not dim weight. No weight printed -> "" and the flag "NO WEIGHT ON LABEL — WEIGH IT". A handwritten weight counts but flag it.
 - shipper: "NAME, STREET, CITY, ST ZIP" in CAPS from the ship-from block. Anything shipped by Amazon (TBA labels, Amazon orders via USPS/UPS, Amazon fulfillment-center senders) -> just "AMAZON". Shipper block cut off -> "NOT SHOWN — SHIPPER BLOCK CUT OFF".
 - invoice: true only when a commercial invoice or a PRICED packing slip/receipt is in the photos. An "INV#" printed on the label is not an invoice; a slip without prices is not an invoice.
 - 4692 NW 133RD ST and 4660 NW 133RD ST (Opa Locka FL 33054) are both our addresses — never a problem.
 - Every box is its own entity: read everything fresh from these photos only.
+
+BILL OF LADING / FREIGHT (pallets, crates, truck deliveries)
+- A bill of lading (BOL), delivery receipt or the carrier's PRO sticker on a pallet is the box's label.
+- tracking: "DELIVERED BY <CARRIER> BOL: <NUMBER>" where <CARRIER> is the trucking company that actually delivered it (the carrier named on the BOL / PRO sticker, e.g. R+L CARRIERS, SAIA, ESTES) — not the shipper, broker or bill-to.
+- customer: the CONSIGNEE / SHIP TO name — not the shipper, not the bill-to or third party. Same name rules as above.
+- shipper: the SHIPPER / SHIP FROM block -> "NAME, STREET, CITY, ST ZIP".
+- weight: the weight on the BOL. If the BOL lists more than one piece or handling unit, add the flag "BOL SAYS <N> PIECES — CHECK ALL ARRIVED".
+- invoice: a bill of lading is never an invoice.
+- contents: described from the operator's other photos — packing slips and photos of the items — with the normal CONTENTS RULES, never from the BOL when those photos exist. Only when there are no such photos, the BOL's description lines may prefill contents (CAPS, one line each, qty = that line's piece count) with the flag "CONTENTS FROM BOL — CHECK". Never NMFC numbers, freight class or handling codes.
+- Flags: "FREIGHT — PALLET" (or CRATE), hazmat when the BOL marks HM, "HEAVY — TEAM LIFT" at 50 lb and over.
 
 CONTENTS RULES (what was inside)
 - One entry per distinct item: "BRAND ITEM" in CAPS, short, no marketing text, NO SKU / model / FNSKU codes. Clothing: the type of clothing only.
@@ -282,7 +292,7 @@ FLAGS (short CAPS phrases for the operator)
 - Contents doubts: "COUNT UNSURE — <ITEM>".
 BADGES: short CAPS chips — carrier and service, which address (4692 or 4660), REF / PO numbers, "1 OF 2", dimensions.`;
 
-const KIND_RULE = `- "label": the box's SHIPPING LABEL — a carrier or shipping label with an address and a tracking number or barcode (UPS, FedEx, USPS, Amazon, DHL, OnTrac, freight / delivery labels). A photo of a whole box where its shipping label is clearly readable also counts.
+const KIND_RULE = `- "label": the box's SHIPPING LABEL — a carrier or shipping label with an address and a tracking number or barcode (UPS, FedEx, USPS, Amazon, DHL, OnTrac, freight / delivery labels), or a BILL OF LADING, freight delivery receipt or carrier PRO sticker. A photo of a whole box or pallet where its shipping label is clearly readable also counts.
 - "inside": anything else — an item, a product box, a packing slip, an invoice or receipt, carton print, a product or FNSKU sticker, a handwritten note.`;
 const CLASSIFY = n => `These ${n} photos are all of ONE package at a package warehouse, in any order: its shipping label and what was inside it.
 For each image decide:
@@ -301,7 +311,7 @@ const SYS = `You read photos of packages received at the 700 Islands warehouse (
 
 function mainPrompt(nL, nI, note, today) {
   const p = [`Read these ${nL + nI} photos of ONE package. Today is ${today}.`];
-  p.push(nL ? `Images 1–${nL} show the OUTSIDE of the box: shipping label(s) and carton print.` : 'There is no label photo for this box: leave the label fields empty.');
+  p.push(nL ? `Images 1–${nL} show the OUTSIDE of the box: shipping label(s) or bill of lading, and carton print.` : 'There is no label photo for this box: leave the label fields empty.');
   p.push(nI ? `Images ${nL + 1}–${nL + nI} show what was INSIDE the box: items, packing slips, invoices.` : 'There are no inside photos.');
   if (note) p.push(`The operator's note (trust it over the photos when they conflict): "${note}"`);
   p.push(`Reply with ONLY one JSON object, exactly these keys:
@@ -318,7 +328,7 @@ const LABEL_PROMPT = (n, today) => `Read ${n === 1 ? 'this photo' : `these ${n} 
 Reply with ONLY one JSON object, exactly these keys:
 {"customer":"","tracking":"","weight_printed":"","weight_unit":"lb","shipper":"","invoice":false,"label_photo":1,"label_box":[0,0,1,1],"carton_items":[{"item":"","qty":1}],"flags":[],"badges":[]}
 - label_photo / label_box: the image with the clearest view of the main shipping label and that label's bounding box as fractions [left, top, right, bottom].
-- carton_items: products named in the carton print, if any (used only when the box has no inside photos). [] when none.`;
+- carton_items: products named in the carton print, or a bill of lading's description lines, if any (used only when the box has no inside photos). [] when none.`;
 const ITEM_PROMPT = `This ONE photo shows something that was INSIDE a package: an item, a product box, a packing slip or an invoice.
 Reply with ONLY one JSON object: {"items":[{"item":"","qty":1}],"slip":false,"invoice":false,"flags":[]}
 - items: what this photo shows, "BRAND ITEM" in CAPS per the rules (no SKU codes); qty = units or packs visible in THIS photo.
@@ -327,9 +337,9 @@ const MERGE_PROMPT = (photosJson, note) => `These are per-photo readings of the 
 ${photosJson}
 ${note ? `The operator's note (trust it over the photos): "${note}"\n` : ''}Combine them into the box's CONTENTS following the counting rules: every photo is its own unit (the same product in two photos = qty 2), packs count as packs, a packing slip's quantities win over photo counts, order = slip order if there is a slip, otherwise photo order. Merge entries that name the same product (keep the clearest name).
 Reply with ONLY one JSON object: {"contents":[{"item":"","qty":1,"photos":[1]}],"flags":[]} — photos = the photo numbers each line came from.`;
-const VERIFY_PROMPT = `This is a shipping label (usually a close-up crop of it). Read it independently and carefully.
+const VERIFY_PROMPT = `This is a shipping label or a bill of lading (usually a close-up crop of it). Read it independently and carefully.
 Return ONLY JSON: {"tracking":"","weight_printed":"","weight_unit":"lb","sure":true}
-- tracking: the main tracking number, no spaces. UPS 1Z = 18 characters; FedEx = 12 digits (drop a 96/9622 prefix of the long barcode string); USPS = the 22-digit tracking line; Amazon TBA and other codes exactly as printed. Put ? in place of any character you cannot read.
+- tracking: the main tracking number, no spaces. UPS 1Z = 18 characters; FedEx = 12 digits (drop a 96/9622 prefix of the long barcode string); USPS = the 22-digit tracking line; Amazon TBA and other codes exactly as printed. Bill of lading / freight: ONLY the carrier's PRO / tracking number (usually under the barcode; the BOL number only if there is no PRO), no words. Put ? in place of any character you cannot read.
 - weight_printed: the package weight as printed (number only) and weight_unit "lb" or "kg"; "" when none.
 - sure: false if any character was hard to read.`;
 
@@ -343,6 +353,16 @@ const capsDate = k => { const [y, m, d] = k.split('-'); return `${d} ${MON[+m - 
 const caps = s => String(s ?? '').replace(/\s+/g, ' ').trim().toUpperCase();
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const alnum = s => caps(s).replace(/[^A-Z0-9]/g, '');
+/* Freight rows are "DELIVERED BY <CARRIER> BOL: <NUMBER>" (the operator's format; older rows used brackets).
+   The tracking check compares only that number, and a freight row is never replaced by the bare number. */
+const isFreightTrk = t => /^(DELIVERED BY|PICK ?UP BY|PICKED UP)/.test(caps(t));
+function trackKey(t) {
+  t = caps(t || '');
+  if (!isFreightTrk(t)) return alnum(t);
+  const m = t.match(/\b(?:BOL|PRO|PROBILL|BILL OF LADING)\b\s*(?:#|NO\.?|NUMBER)?\s*:?\s*([A-Z0-9][A-Z0-9-]*)\s*$/) || t.match(/\(([^()]*)\)\s*$/);
+  return m ? alnum(m[1].replace(/\b(PROBILL|PRO|BOL|BILL OF LADING|REF|NO|NUMBER)\b/g, '')) : '';
+}
+const trackMatch = (a, bb) => !!bb && !/\?/.test(bb) && !!trackKey(a) && trackKey(a) === alnum(bb);
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const ls = { get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} } };
 function normTrack(t) { t = caps(t); return /^(DELIVERED BY|PICK ?UP BY|NOT IN FRAME)/.test(t) ? t : t.replace(/[\s-]/g, ''); }
@@ -410,10 +430,11 @@ const photoUrl = id => {
   if (!p || !p.blob) return '';
   const u = URL.createObjectURL(p.blob); S.urls.set(id, u); return u;
 };
+let trkIdx = null;                                   // tracking → boxes index for repeat checks (see dupesOf)
 const allBoxes = () => [...S.boxes.values()];
 const pendingPhotos = () => [...S.photos.values()].filter(p => !p.box).sort((a, b) => a.t - b.t);
 
-async function saveBox(b) { b.updatedAt = Date.now(); S.boxes.set(b.id, b); await putBox(b); render(); }
+async function saveBox(b) { b.updatedAt = Date.now(); S.boxes.set(b.id, b); trkIdx = null; await putBox(b); render(); }
 async function patchBox(id, fn) { const b = S.boxes.get(id); if (!b) return; fn(b); await saveBox(b); }
 
 /* ================= backend ================= */
@@ -914,7 +935,10 @@ async function readBox(id, opts) {
       if (labels.length) {
         set('customer', caps(res.customer) || 'NO NAME ON LABEL');
         let t = normTrack(res.tracking);
-        if (verify && !verify.match && verify.second && !/\?/.test(verify.second) && verify.sure) t = verify.second;
+        if (verify && !verify.match && verify.second && !/\?/.test(verify.second) && verify.sure) {
+          if (!isFreightTrk(t)) t = verify.second;
+          else if (!trackKey(t)) t = `${t} BOL: ${verify.second}`;       // freight row without its number: add it, keep DELIVERED BY
+        }
         set('tracking', t);
         let w = roundWeight(res.weight_printed, res.weight_unit);
         if (!w && verify && verify.weight) w = roundWeight(verify.weight, verify.unit);
@@ -980,7 +1004,7 @@ async function readOnce(b0, labels, items, effort, careful) {
   let verify = null;
   if (lp && v && res.tracking) {
     const a = normTrack(res.tracking), bb = normTrack(v.tracking);
-    verify = { first: a, second: bb, sure: !!v.sure, match: !!bb && alnum(a) === alnum(bb) && !/\?/.test(bb),
+    verify = { first: a, second: bb, sure: !!v.sure, match: trackMatch(a, bb),
       weight: v.weight_printed ? String(v.weight_printed) : '', unit: v.weight_unit || '' };
   }
   return { res, verify, contents, flags, hasLabel: !!lb.length };
@@ -1015,7 +1039,7 @@ function preRead(p) {
 function verifyOf(res, v) {
   if (!v || !res || !res.tracking) return null;
   const a = normTrack(res.tracking), bb = normTrack(v.tracking);
-  return { first: a, second: bb, sure: !!v.sure, match: !!bb && alnum(a) === alnum(bb) && !/\?/.test(bb), weight: v.weight_printed ? String(v.weight_printed) : '', unit: v.weight_unit || '' };
+  return { first: a, second: bb, sure: !!v.sure, match: trackMatch(a, bb), weight: v.weight_printed ? String(v.weight_printed) : '', unit: v.weight_unit || '' };
 }
 /* Uses whatever was read ahead, reads only what's missing, then combines. Throws if anything failed (the caller falls back to a full read). */
 async function readAhead(b0, labels, items) {
@@ -1057,10 +1081,16 @@ function unsure(r) {
 }
 
 /* ================= checks ================= */
+/* Tracking number → boxes, built once and rebuilt only after a box changes. Checking every box
+   against every box ever kept made each screen update slower day by day. (trkIdx is declared with S.) */
 function dupesOf(b) {
   const t = alnum(b.row.tracking);
   if (!t || t.length < 8) return [];
-  return allBoxes().filter(o => o.id !== b.id && alnum(o.row.tracking) === t);
+  if (!trkIdx) {
+    trkIdx = new Map();
+    for (const o of S.boxes.values()) { const k = alnum(o.row.tracking); if (k.length >= 8) { const a = trkIdx.get(k); if (a) a.push(o); else trkIdx.set(k, [o]); } }
+  }
+  return (trkIdx.get(t) || []).filter(o => o.id !== b.id);
 }
 function watchHits(b) {
   if (!S.watch || !b.row.customer) return [];
@@ -1416,7 +1446,7 @@ document.addEventListener('change', e => {
 async function deleteBox(id) {
   const b = S.boxes.get(id); S.confirmDel = null; if (!b) return;
   for (const pid of b.photos) { await delPhoto(pid); S.photos.delete(pid); }
-  await delBoxDb(id); S.boxes.delete(id); S.expanded.delete(id); render();
+  await delBoxDb(id); S.boxes.delete(id); trkIdx = null; S.expanded.delete(id); render();
 }
 
 /* lightbox: zoom, move to another box, flip label/inside, remove */
@@ -1494,7 +1524,7 @@ $('#setSave').addEventListener('click', async () => {
 $('#purgeBtn').addEventListener('click', async () => {
   const cutoff = Date.now() - 7 * 86400000; let n = 0;
   for (const b of allBoxes()) {
-    if (!b.sheetRow || b.createdAt > cutoff) continue;
+    if (!b.sheetRow || !b.photosLinked || b.createdAt > cutoff) continue;   // only photos already saved to Drive
     for (const pid of b.photos) { await delPhoto(pid); S.photos.delete(pid); n++; }
     b.photos = []; await putBox(b);
   }
@@ -1508,6 +1538,7 @@ $('#purgeBtn').addEventListener('click', async () => {
     const [photos, boxes] = await Promise.all([allPhotosMeta(), allBoxesDb()]);
     for (const p of photos) S.photos.set(p.id, p);
     for (const b of boxes) { if (b.status === 'reading' || b.status === 'queued') { b.status = 'new'; S.resume = (S.resume || []).concat(b); } S.boxes.set(b.id, b); }
+    trkIdx = null;
   } catch (e) { notice('This phone’s storage couldn’t be opened. Photos won’t be kept.', true); }
   try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch (e) {}
   render();
