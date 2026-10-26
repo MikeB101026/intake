@@ -1,5 +1,11 @@
 /**
- * 700 Islands Intake — backend v3 (Google Apps Script web app).
+ * 700 Islands Intake — backend v4 (Google Apps Script web app).
+ *
+ * v4: link another device without typing the access code. The new device asks for a 6-digit number
+ * (pairStart, no code needed), shows it and waits (pairPoll); an already-linked device types the number
+ * (pairApprove). The new device then gets its OWN access code, stored here only as a hash under
+ * DEV_<id>, so one device can be unlinked without changing INTAKE_TOKEN. Numbers are single-use, live
+ * 5 minutes, at most 10 are handed out per 10 minutes, and 5 wrong numbers lock linking for 15 minutes.
  *
  * v3: the app trusts "append" with checkDupes only from v3 or later, because an earlier v2 build
  * ignored checkDupes. Fast mode switches itself off for an hour if the account can't use it.
@@ -17,6 +23,7 @@
  *   FAST_MODEL         optional, default claude-haiku-5-5  (sorts photos)
  *   SPEED              optional, default "fast" = Opus fast mode (up to 2.5x faster replies, 2x the price);
  *                      set it to "normal" to switch fast mode off
+ *   DEV_…              one per linked device (written by the app; delete one to unlink that device)
  *
  * Update: paste this whole file over Code.gs → Save → Deploy → Manage deployments → ✏️ Edit
  *         → Version: New version → Deploy. The /exec address stays the same.
@@ -34,7 +41,7 @@ const DEFAULTS = {
 const PROPS = PropertiesService.getScriptProperties();
 const prop = k => PROPS.getProperty(k) || DEFAULTS[k] || '';
 const MON = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-const VERSION = 3;
+const VERSION = 4;
 
 function doGet() { return out({ ok: true, app: '700 Islands Intake backend', v: VERSION }); }
 
@@ -43,8 +50,15 @@ function doPost(e) {
     const req = JSON.parse(e.postData.contents);
     const token = PROPS.getProperty('INTAKE_TOKEN');
     if (!token) return out({ error: 'INTAKE_TOKEN is not set in the script’s Script properties.' });
-    if (req.token !== token) return out({ error: 'Wrong access code.' });
+    // Linking a new device needs no access code: it only gets one after a linked device types its number.
+    if (req.op === 'pairStart') return out(pairStart_(req));
+    if (req.op === 'pairPoll') return out(pairPoll_(req));
+    const who = authed_(req.token, token);
+    if (!who) return out({ error: 'Wrong access code.' });
     switch (req.op) {
+      case 'pairApprove': return out(pairApprove_(req, who));
+      case 'devices': return out({ devices: devices_(), self: who.id });
+      case 'unlink': return out(unlink_(req));
       case 'ping': return out({ ok: true, v: VERSION, model: model_(), fastModel: fastModel_(), tab: prop('TAB'), nextRow: +prop('NEXT_ROW'), hasKey: !!PROPS.getProperty('ANTHROPIC_API_KEY') });
       case 'claude': return out(callClaude_(req));
       case 'warm': return out(warm_(req));
@@ -60,6 +74,109 @@ function doPost(e) {
   }
 }
 function out(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
+
+/* ---------------- Access codes and linked devices ---------------- */
+const PAIR_TTL = 300;                 // a link number lives 5 minutes
+const PAIR_STARTS = 10;               // link numbers handed out per 10 minutes
+const PAIR_BAD = 5;                   // wrong numbers before linking locks for 15 minutes
+const hex_ = bytes => bytes.map(b => ((b + 256) % 256).toString(16).padStart(2, '0')).join('');
+const sha_ = s => hex_(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, s, Utilities.Charset.UTF_8));
+const rand_ = () => Utilities.getUuid().replace(/-/g, '');            // 122 random bits (SecureRandom)
+const cache_ = () => CacheService.getScriptCache();                    // shared by all three deployments
+// A fixed zone: reading the script's own time zone setting needs a Google permission the web app doesn't have.
+const nowText_ = () => Utilities.formatDate(new Date(), 'America/New_York', 'd MMM yyyy HH:mm').toUpperCase();
+
+/** The main access code → {id: ''}; a linked device's own code (dev_<id>_<secret>) → {id}; anything else → null. */
+function authed_(given, token) {
+  if (typeof given !== 'string' || !given) return null;
+  if (given === token) return { id: '' };
+  const m = given.match(/^dev_([0-9a-f]{12})_([0-9a-f]{64})$/);
+  if (!m) return null;
+  const rec = PROPS.getProperty('DEV_' + m[1]);
+  if (!rec) return null;
+  return JSON.parse(rec).h === sha_(m[2]) ? { id: m[1] } : null;
+}
+
+function withLock_(fn) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(20000)) throw new Error('The backend is busy. Try again in a moment.');
+  try { return fn(); } finally { lock.releaseLock(); }
+}
+
+/** New device: get a 6-digit number for its screen, plus a private pair id only this device knows (used to poll).
+ *  (Don't use the word s-h-o-w in comments here: Apps Script then asks for an extra UI permission and the web app stops.) */
+function pairStart_(req) {
+  return withLock_(() => {
+    const c = cache_(), bucket = 'pairStarts:' + Math.floor(Date.now() / 600000);
+    const n = +(c.get(bucket) || 0);
+    if (n >= PAIR_STARTS) throw new Error('Too many link requests. Wait 10 minutes and try again.');
+    c.put(bucket, String(n + 1), 600);
+    let code = '';
+    for (let i = 0; i < 20 && !code; i++) {
+      const k = String(parseInt(rand_().slice(0, 12), 16) % 1000000).padStart(6, '0');
+      if (!c.get('pair:' + k)) code = k;
+    }
+    if (!code) throw new Error('Couldn’t make a link number. Try again.');
+    const id = rand_() + rand_();
+    const name = String(req.name || '').replace(/[^\w .,()+\/-]/g, '').trim().slice(0, 40) || 'Unnamed device';
+    c.put('pair:' + code, JSON.stringify({ id, name, state: 'wait', exp: Date.now() + PAIR_TTL * 1000 }), PAIR_TTL);
+    c.put('pairId:' + id, code, PAIR_TTL);
+    return { code, pairId: id, ttl: PAIR_TTL };
+  });
+}
+
+/** New device, every few seconds: {state: 'wait' | 'gone'}, or once approved {state: 'ok', token} — given out once. */
+function pairPoll_(req) {
+  const id = String(req.pairId || '');
+  if (!/^[0-9a-f]{64}$/.test(id)) return { state: 'gone' };
+  const c = cache_(), code = c.get('pairId:' + id);
+  if (!code) return { state: 'gone' };
+  const p0 = JSON.parse(c.get('pair:' + code) || 'null');
+  if (!p0 || p0.id !== id) return { state: 'gone' };
+  if (p0.state !== 'ok') return { state: 'wait' };
+  return withLock_(() => {
+    const p = JSON.parse(c.get('pair:' + code) || 'null');
+    if (!p || p.id !== id || p.state !== 'ok') return { state: 'gone' };
+    c.removeAll(['pair:' + code, 'pairId:' + id]);                       // single use
+    const devId = rand_().slice(0, 12), secret = rand_() + rand_();
+    PROPS.setProperty('DEV_' + devId, JSON.stringify({ h: sha_(secret), name: p.name, at: nowText_(), by: p.by }));
+    return { state: 'ok', token: 'dev_' + devId + '_' + secret, name: p.name };
+  });
+}
+
+/** Linked device: approve the number shown on the new device. */
+function pairApprove_(req, who) {
+  return withLock_(() => {
+    const c = cache_(), bad = +(c.get('pairBad') || 0);
+    if (bad >= PAIR_BAD) throw new Error('Too many wrong numbers. Linking is locked for 15 minutes.');
+    const code = String(req.code || '').replace(/\D/g, '');
+    const p = code.length === 6 ? JSON.parse(c.get('pair:' + code) || 'null') : null;
+    if (!p || p.state !== 'wait' || p.exp < Date.now()) {
+      c.put('pairBad', String(bad + 1), 900);
+      throw new Error(bad + 1 >= PAIR_BAD ? 'Wrong number. Linking is now locked for 15 minutes.'
+        : 'That number isn’t waiting to be linked (wrong, already used or expired). ' + (PAIR_BAD - bad - 1) + ' tries left.');
+    }
+    p.state = 'ok'; p.by = who.id || 'main';
+    const left = Math.max(120, Math.round((p.exp - Date.now()) / 1000));   // time for the new device to pick it up
+    c.put('pair:' + code, JSON.stringify(p), left);
+    c.put('pairId:' + p.id, code, left);
+    return { ok: true, name: p.name };
+  });
+}
+
+function devices_() {
+  const all = PROPS.getProperties();
+  return Object.keys(all).filter(k => /^DEV_[0-9a-f]{12}$/.test(k)).map(k => {
+    const r = JSON.parse(all[k]);
+    return { id: k.slice(4), name: r.name, at: r.at };
+  });
+}
+function unlink_(req) {
+  const id = String(req.id || '');
+  if (!/^[0-9a-f]{12}$/.test(id)) throw new Error('Unknown device.');
+  PROPS.deleteProperty('DEV_' + id);
+  return { ok: true };
+}
 
 /* ---------------- Claude ---------------- */
 function model_() { return PROPS.getProperty('MODEL') || 'claude-opus-5-5'; }
@@ -288,6 +405,7 @@ function setup() {
   Logger.log('Sheet OK: ' + sh.getParent().getName() + ' → ' + sh.getName());
   Logger.log('API key set: ' + !!PROPS.getProperty('ANTHROPIC_API_KEY'));
   Logger.log('Access code set: ' + !!PROPS.getProperty('INTAKE_TOKEN'));
+  Logger.log('Linked devices: ' + devices_().length);
   Logger.log('Models: ' + model_() + ' (reading), ' + fastModel_() + ' (sorting)');
   Logger.log('Photo folder: ' + DriveApp.getFolderById(prop('PHOTO_FOLDER_ID')).getName());
 }
