@@ -124,6 +124,10 @@ button{cursor:pointer}
 .sheet label{display:flex;flex-direction:column;gap:4px;font-weight:600}
 .sheet input[type=text],.sheet input[type=password],.sheet input[type=url]{border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:var(--card)}
 .sheet .check{flex-direction:row;align-items:center;gap:8px;font-weight:500}
+.link-box{border:1px solid var(--line);border-radius:10px;background:var(--card);padding:12px;display:flex;flex-direction:column;gap:8px;align-items:flex-start}
+.pair-code{font:700 56px/1 var(--f-mono);letter-spacing:.1em;padding:6px 0}
+.sheet input.pair-in{font:700 22px/1 var(--f-mono);letter-spacing:.15em;width:8.5em;border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:var(--bg)}
+.dev-row{display:flex;gap:8px;align-items:center;justify-content:space-between;width:100%;border-top:1px dashed var(--line2);padding-top:6px;font-size:14px}
 /* camera */
 .cam{position:fixed;inset:0;z-index:40;background:#000;display:flex;flex-direction:column;color:#fff;touch-action:manipulation;user-select:none;-webkit-user-select:none}
 .cam video{flex:1;min-height:0;width:100%;object-fit:cover;background:#000}
@@ -204,11 +208,30 @@ button{cursor:pointer}
 <div class="sheet" id="settings" hidden>
   <div class="sheet-in">
     <h1>Settings</h1>
-    <p class="muted">Paste these once from the backend setup (see SETUP.md). They stay on this phone.</p>
+    <div class="link-box" id="linkNew">
+      <b>Set up this laptop or phone</b>
+      <span class="muted">No access code needed: this device shows a number, you type it on the phone that's already set up.</span>
+      <button class="btn primary" id="pairStartBtn" type="button">Link this device</button>
+      <div id="pairShow" hidden>
+        <div class="muted">On the phone that's already set up: Settings → <b>Link another device</b> → type</div>
+        <div class="pair-code" id="pairCode">…</div>
+        <div class="muted" id="pairMsg"></div>
+        <button class="btn small" id="pairCancel" type="button">Cancel</button>
+      </div>
+    </div>
+    <p class="muted">Or paste these from the backend setup (see SETUP.md). They stay on this device.</p>
     <label>Backend address<input type="url" id="setUrl" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off"></label>
     <label>Access code<input type="password" id="setToken" placeholder="the INTAKE_TOKEN you chose" autocomplete="off"></label>
     <div class="row-actions"><button class="btn primary" id="setSave" type="button">Save and test</button><button class="btn" id="setClose" type="button">Close</button></div>
     <div id="setStatus" class="muted"></div>
+    <div class="link-box" id="linkOther" hidden>
+      <b>Link another device</b>
+      <span class="muted">On the new laptop or phone open the app → Settings → <b>Link this device</b>, then type the 6-digit number it shows:</span>
+      <div class="row-actions"><input class="pair-in" type="text" inputmode="numeric" maxlength="7" id="pairInput" placeholder="000000" autocomplete="off" aria-label="Number shown on the new device"><button class="btn primary" id="pairApproveBtn" type="button">Link</button></div>
+      <div class="muted" id="pairApproveMsg"></div>
+      <button class="btn small" id="devListBtn" type="button">Linked devices</button>
+      <div id="devList" class="muted" style="width:100%"></div>
+    </div>
     <label class="check"><input type="checkbox" id="setSharp"> Full-quality photos from the real camera (recommended; turn off only if the shutter feels too slow — then photos are grainier preview frames)</label>
     <label class="check"><input type="checkbox" id="setAutoSort"> Sort and read as soon as I tap DONE in the camera</label>
     <label class="check"><input type="checkbox" id="setAutoSend"> Send clean boxes to the sheet automatically (anything with a warning still waits for you)</label>
@@ -439,10 +462,13 @@ async function patchBox(id, fn) { const b = S.boxes.get(id); if (!b) return; fn(
 
 /* ================= backend ================= */
 async function api(op, payload) {
-  if (!S.cfg.url || !S.cfg.token) throw new Error('Set up the backend first: Settings → backend address and access code.');
+  if (!S.cfg.url || !S.cfg.token) throw new Error('Set up the backend first: Settings → Link this device.');
+  return post(S.cfg.url, Object.assign({ op, token: S.cfg.token }, payload || {}));
+}
+async function post(url, body) {
   let r;
   try {
-    r = await fetch(S.cfg.url, { method: 'POST', redirect: 'follow', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(Object.assign({ op, token: S.cfg.token }, payload || {})) });
+    r = await fetch(url, { method: 'POST', redirect: 'follow', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body) });
   } catch (e) { throw new Error('No connection to the backend. Check your signal and try again.'); }
   let j;
   try { j = await r.json(); } catch (e) { throw new Error('The backend address doesn’t look right (Settings).'); }
@@ -1496,6 +1522,7 @@ $('#lbDel').addEventListener('click', async () => {
 /* settings */
 function openSettings() {
   $('#setUrl').value = S.cfg.url; $('#setToken').value = S.cfg.token;
+  $('#linkOther').hidden = !S.cfg.token; $('#devList').textContent = '';
   $('#setSharp').checked = S.sharp; $('#setAutoSort').checked = S.autoSort;
   $('#setAutoSend').checked = S.autoSend; $('#setHigh').checked = S.alwaysHigh;
   $('#settings').hidden = false; storageInfo();
@@ -1509,18 +1536,90 @@ $('#setSharp').addEventListener('change', e => { S.sharp = e.target.checked; ls.
 $('#setAutoSort').addEventListener('change', e => { S.autoSort = e.target.checked; ls.set('autoSort', S.autoSort ? '1' : '0'); });
 $('#setAutoSend').addEventListener('change', e => { S.autoSend = e.target.checked; ls.set('autoSend', S.autoSend ? '1' : '0'); if (S.autoSend) autoSend(); });
 $('#setHigh').addEventListener('change', e => { S.alwaysHigh = e.target.checked; ls.set('alwaysHigh', S.alwaysHigh ? '1' : '0'); });
-$('#setSave').addEventListener('click', async () => {
-  S.cfg = { url: $('#setUrl').value.trim(), token: $('#setToken').value.trim() };
+$('#setSave').addEventListener('click', () => saveCfg($('#setUrl').value.trim(), $('#setToken').value.trim(), ''));
+async function saveCfg(url, token, first) {
+  S.cfg = { url, token };
   ls.set('backendUrl', S.cfg.url); ls.set('backendToken', S.cfg.token);
-  const st = $('#setStatus'); st.textContent = 'Testing…';
+  $('#linkOther').hidden = !token;
+  const st = $('#setStatus'); st.textContent = first + 'Testing…';
   try {
     const j = await api('ping');
     S.bv = j.v || 1; if (S.bv >= 3) ls.set('bv3:' + S.cfg.url, String(S.bv));
-    st.textContent = `Connected. Model: ${j.model}` + (j.fastModel ? `, sorting with ${j.fastModel}` : ' (old backend: update Code.gs for full speed)') +
+    st.textContent = first + `Connected. Model: ${j.model}` + (j.fastModel ? `, sorting with ${j.fastModel}` : ' (old backend: update Code.gs for full speed)') +
       `. Sheet tab: ${j.tab}, next row about ${j.nextRow}.` + (j.hasKey ? '' : ' The Anthropic API key is NOT set in the backend yet.');
     loadWatch().catch(() => {});
-  } catch (e) { st.textContent = e.message; }
+  } catch (e) { st.textContent = first + e.message; }
+}
+
+/* Linking a device: the new one shows a 6-digit number, an already-set-up one types it, and the new one
+   receives its own access code from the backend. Nobody types or sees a code; it never goes in a URL. */
+const DEFAULT_BACKEND = 'https://script.google.com/macros/s/AKfycbzc4O3X7wfmCO0bJXoNUgiBZrJcHPxcOAF2pCRvJbDrdfPchbb240s-_kLbPFnrZpaOEA/exec';
+let pairRun = 0;
+function deviceName() {
+  const u = navigator.userAgent;
+  const os = /Android/.test(u) ? 'Android' : /iPhone|iPad/.test(u) ? 'iPhone' : /Windows/.test(u) ? 'Windows' : /CrOS/.test(u) ? 'Chromebook' : /Mac OS X/.test(u) ? 'Mac' : /Linux/.test(u) ? 'Linux' : 'device';
+  const br = /; wv\)/.test(u) ? 'Intake app' : /Edg\//.test(u) ? 'Edge' : /SamsungBrowser/.test(u) ? 'Samsung Internet' : /Chrome\//.test(u) ? 'Chrome' : /Firefox\//.test(u) ? 'Firefox' : /Safari\//.test(u) ? 'Safari' : 'Browser';
+  return br + ' on ' + os;
+}
+$('#pairStartBtn').addEventListener('click', async () => {
+  const run = ++pairRun, url = $('#setUrl').value.trim() || S.cfg.url || DEFAULT_BACKEND;
+  const msg = t => { if (run === pairRun) $('#pairMsg').textContent = t; };
+  $('#pairShow').hidden = false; $('#pairCode').textContent = '…'; msg('Getting a number…');
+  let j;
+  try { j = await post(url, { op: 'pairStart', name: deviceName() }); } catch (e) { msg(e.message); return; }
+  if (run !== pairRun) return;
+  $('#pairCode').textContent = j.code.slice(0, 3) + ' ' + j.code.slice(3);
+  const until = Date.now() + (j.ttl || 300) * 1000;
+  while (run === pairRun) {
+    const left = Math.round((until - Date.now()) / 1000);
+    if (left <= 0) { $('#pairCode').textContent = '—'; msg('That number expired. Tap Link this device for a new one.'); return; }
+    msg(`Waiting for the other device… ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')} left`);
+    await new Promise(r => setTimeout(r, 3000));
+    if (run !== pairRun) return;
+    let r;
+    try { r = await post(url, { op: 'pairPoll', pairId: j.pairId }); } catch (e) { continue; }
+    if (run !== pairRun) return;
+    if (r.state === 'gone') { $('#pairCode').textContent = '—'; msg('That number is no longer valid. Tap Link this device for a new one.'); return; }
+    if (r.state === 'ok' && r.token) {
+      pairRun++; $('#pairShow').hidden = true;
+      $('#setUrl').value = url; $('#setToken').value = r.token;
+      await saveCfg(url, r.token, 'Linked. ');
+      notice('This device is linked and ready.', false);
+      return;
+    }
+  }
 });
+$('#pairCancel').addEventListener('click', () => { pairRun++; $('#pairShow').hidden = true; });
+$('#pairApproveBtn').addEventListener('click', async () => {
+  const code = $('#pairInput').value.replace(/\D/g, ''), m = $('#pairApproveMsg');
+  if (code.length !== 6) { m.textContent = 'Type the 6 digits shown on the new device.'; return; }
+  m.textContent = 'Linking…';
+  try {
+    const j = await api('pairApprove', { code });
+    $('#pairInput').value = ''; m.textContent = `Linked: ${j.name}. It sets itself up within a few seconds.`;
+  } catch (e) { m.textContent = e.message; }
+});
+$('#pairInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('#pairApproveBtn').click(); });
+async function showDevices() {
+  const box = $('#devList'); box.textContent = 'Loading…';
+  try {
+    const j = await api('devices');
+    box.textContent = j.devices.length ? '' : 'No linked devices yet. (Devices set up with the main access code aren’t listed.)';
+    for (const d of j.devices) {
+      const row = document.createElement('div'), t = document.createElement('span'), b = document.createElement('button');
+      row.className = 'dev-row'; b.className = 'btn small danger'; b.type = 'button';
+      t.textContent = `${d.name} · linked ${d.at}` + (d.id === j.self ? ' · THIS DEVICE' : '');
+      b.textContent = 'Unlink';
+      b.addEventListener('click', async () => {
+        if (b.textContent === 'Unlink') { b.textContent = 'Tap again to unlink'; return; }
+        b.disabled = true;
+        try { await api('unlink', { id: d.id }); showDevices(); } catch (e) { box.textContent = e.message; }
+      });
+      row.append(t, b); box.append(row);
+    }
+  } catch (e) { box.textContent = e.message; }
+}
+$('#devListBtn').addEventListener('click', showDevices);
 $('#purgeBtn').addEventListener('click', async () => {
   const cutoff = Date.now() - 7 * 86400000; let n = 0;
   for (const b of allBoxes()) {
@@ -1542,7 +1641,7 @@ $('#purgeBtn').addEventListener('click', async () => {
   } catch (e) { notice('This phone’s storage couldn’t be opened. Photos won’t be kept.', true); }
   try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch (e) {}
   render();
-  if (!S.cfg.url || !S.cfg.token) { notice('First time: open Settings and paste the backend address and access code.', false); }
+  if (!S.cfg.url || !S.cfg.token) { notice('First time: open Settings → Link this device, then type the number it shows into the phone that’s already set up.', false); }
   else {
     loadWatch().catch(() => {});
     // Reads cut off when the app was closed pick up again by themselves, in box order.
