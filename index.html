@@ -445,7 +445,7 @@ const S = {
   cfg: { url: ls.get('backendUrl') || '', token: ls.get('backendToken') || '' },
   sharp: ls.get('sharp2') !== '0', autoSort: ls.get('autoSort') !== '0',
   autoSend: ls.get('autoSend') !== '0', alwaysHigh: ls.get('alwaysHigh') === '1',
-  bv: 0, sortP: new Map(), held: new Set(), sending: new Set(), linking: null
+  bv: 0, sortP: new Map(), held: new Set(), sending: new Set(), linking: null, printing: new Set()
 };
 const photoUrl = id => {
   if (S.urls.has(id)) return S.urls.get(id);
@@ -1272,6 +1272,26 @@ async function linkPhotos(b) {
     for (const p of ph) { B64.delete(p.blob); CROPS.delete(p.blob); }      // free the phone's memory once a box is done
   } finally { S.linking = null; }
 }
+/* ================= label printing =================
+   "Print label" sends the customer name (and piece, e.g. 1 / 2) to the backend; the print helper on the
+   laptop prints the 700 Islands label on the D520 a few seconds later (tools/print_agent.py). */
+function pieceOf(b) {
+  const m = [...(b.flags || []), ...(b.badges || [])].join(' ').match(/\b(\d+)\s*(?:OF|\/)\s*(\d+)\b/);
+  return m && +m[1] >= 1 && +m[1] <= +m[2] && +m[2] <= 99 ? `${m[1]} / ${m[2]}` : '1 / 1';
+}
+async function printLabel(b) {
+  const name = caps(b.row.customer);
+  if (!name || S.printing.has(b.id)) return;
+  S.printing.add(b.id); render();
+  try {
+    const j = await api('printAdd', { name, piece: pieceOf(b) });
+    if (j.error || !j.ok) throw new Error(j.error || 'The backend didn’t take the label.');
+    notice(j.printerOnline ? `Label for ${name} sent to the printer.`
+      : `Label for ${name} is waiting — the label printer on the laptop isn’t running. It prints as soon as it starts.`, !j.printerOnline);
+  } catch (e) {
+    notice(/Unknown request/.test(e.message) ? 'The backend needs the printing update (v5) first.' : `Label didn’t go to the printer: ${e.message}`, true);
+  } finally { S.printing.delete(b.id); render(); }
+}
 const unlinked = () => allBoxes().filter(b => b.day === S.day && b.sheetRow && !b.photosLinked && b.photos.length && !LINK.q.includes(b.id) && S.linking !== b.id);
 async function updateRows() {
   const list = dirtyBoxes(); if (!list.length || S.busy) return;
@@ -1343,6 +1363,7 @@ function cardHtml(b) {
   h += `<div class="row-actions">
     <button type="button" class="btn small" data-act="cam">+ Camera</button>
     <button type="button" class="btn small" data-act="reread" ${ph.length ? '' : 'disabled'}>Read again</button>
+    <button type="button" class="btn small" data-act="print" ${row.customer && !S.printing.has(b.id) ? '' : 'disabled'}>${S.printing.has(b.id) ? 'Printing…' : 'Print label'}</button>
     ${vs === 'ready' && !S.busy ? '<button type="button" class="btn small primary" data-act="send1">Send to sheet</button>' : ''}
     ${vs === 'check' ? '<button type="button" class="btn small tape" data-act="ok">Looks good</button>' : ''}
     ${vs === 'dirty' ? '<button type="button" class="btn small tape" data-act="upd">Update sheet row</button>' : ''}
@@ -1452,6 +1473,7 @@ document.addEventListener('click', e => {
     case 'reread': S.held.delete(id); queueRead(id, { effort: 'high', careful: true }); break;   // "Read again" always reads at high
     case 'cam': openCamera(id); break;
     case 'send1': planSend([b]); break;
+    case 'print': printLabel(b); break;
     case 'upd': updateRows(); break;
     case 'del': S.confirmDel = id; render(); break;
     case 'del-no': S.confirmDel = null; render(); break;
