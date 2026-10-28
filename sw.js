@@ -1,6 +1,6 @@
 // Offline shell: the app opens instantly even with weak signal. Network first for the page so
 // updates arrive on the next open; cached copy when offline.
-const CACHE = 'intake-v16';
+const CACHE = 'intake-v17';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {

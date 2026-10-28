@@ -235,6 +235,7 @@ button{cursor:pointer}
     <label class="check"><input type="checkbox" id="setSharp"> Full-quality photos from the real camera (recommended; turn off only if the shutter feels too slow — then photos are grainier preview frames)</label>
     <label class="check"><input type="checkbox" id="setAutoSort"> Sort and read as soon as I tap DONE in the camera</label>
     <label class="check"><input type="checkbox" id="setAutoSend"> Send clean boxes to the sheet automatically (anything with a warning still waits for you)</label>
+    <label class="check"><input type="checkbox" id="setAutoPrint"> Print the label automatically when a box goes into the sheet (the “Print label” button always works too)</label>
     <label class="check"><input type="checkbox" id="setHigh"> Always read at high effort (slower; normally it reads at medium and switches to high by itself when anything looks unsure)</label>
     <div class="muted" id="storeInfo"></div>
     <button class="btn danger" id="purgeBtn" type="button">Delete photos of boxes already in the sheet (older than 7 days)</button>
@@ -444,7 +445,7 @@ const S = {
   readQ: [], reading: null, watch: null, plan: null, busy: false, lb: null,
   cfg: { url: ls.get('backendUrl') || '', token: ls.get('backendToken') || '' },
   sharp: ls.get('sharp2') !== '0', autoSort: ls.get('autoSort') !== '0',
-  autoSend: ls.get('autoSend') !== '0', alwaysHigh: ls.get('alwaysHigh') === '1',
+  autoSend: ls.get('autoSend') !== '0', alwaysHigh: ls.get('alwaysHigh') === '1', autoPrint: ls.get('autoPrint') === '1',
   bv: 0, sortP: new Map(), held: new Set(), sending: new Set(), linking: null, printing: new Set()
 };
 const photoUrl = id => {
@@ -1231,6 +1232,7 @@ async function finishSend(list, placed) {
   notice(`✓ Box ${seqs} is in the sheet (${where}). Photos are saving in the background.`);
   setTimeout(() => { if ($('#notice').textContent.startsWith('✓')) notice(null); }, 6000);
   for (const p of placed) queueLinks(p.id);
+  if (S.autoPrint) for (const p of placed) { const b = S.boxes.get(p.id); if (b) printLabel(b, true); }   // setting: label prints as each box goes in
   render();
   autoSend();
 }
@@ -1279,15 +1281,15 @@ function pieceOf(b) {
   const m = [...(b.flags || []), ...(b.badges || [])].join(' ').match(/\b(\d+)\s*(?:OF|\/)\s*(\d+)\b/);
   return m && +m[1] >= 1 && +m[1] <= +m[2] && +m[2] <= 99 ? `${m[1]} / ${m[2]}` : '1 / 1';
 }
-async function printLabel(b) {
+async function printLabel(b, auto) {
   const name = caps(b.row.customer);
   if (!name || S.printing.has(b.id)) return;
   S.printing.add(b.id); render();
   try {
     const j = await api('printAdd', { name, piece: pieceOf(b) });
     if (j.error || !j.ok) throw new Error(j.error || 'The backend didn’t take the label.');
-    notice(j.printerOnline ? `Label for ${name} sent to the printer.`
-      : `Label for ${name} is waiting — the label printer on the laptop isn’t running. It prints as soon as it starts.`, !j.printerOnline);
+    if (!j.printerOnline) notice(`Label for ${name} is waiting — the label printer on the laptop isn’t running. It prints as soon as it starts.`, true);
+    else if (!auto) notice(`Label for ${name} sent to the printer.`);              // automatic prints stay quiet when all is well
   } catch (e) {
     notice(/Unknown request/.test(e.message) ? 'The backend needs the printing update (v5) first.' : `Label didn’t go to the printer: ${e.message}`, true);
   } finally { S.printing.delete(b.id); render(); }
@@ -1546,7 +1548,7 @@ function openSettings() {
   $('#setUrl').value = S.cfg.url; $('#setToken').value = S.cfg.token;
   $('#linkOther').hidden = !S.cfg.token; $('#devList').textContent = '';
   $('#setSharp').checked = S.sharp; $('#setAutoSort').checked = S.autoSort;
-  $('#setAutoSend').checked = S.autoSend; $('#setHigh').checked = S.alwaysHigh;
+  $('#setAutoSend').checked = S.autoSend; $('#setHigh').checked = S.alwaysHigh; $('#setAutoPrint').checked = S.autoPrint;
   $('#settings').hidden = false; storageInfo();
 }
 async function storageInfo() {
@@ -1558,6 +1560,7 @@ $('#setSharp').addEventListener('change', e => { S.sharp = e.target.checked; ls.
 $('#setAutoSort').addEventListener('change', e => { S.autoSort = e.target.checked; ls.set('autoSort', S.autoSort ? '1' : '0'); });
 $('#setAutoSend').addEventListener('change', e => { S.autoSend = e.target.checked; ls.set('autoSend', S.autoSend ? '1' : '0'); if (S.autoSend) autoSend(); });
 $('#setHigh').addEventListener('change', e => { S.alwaysHigh = e.target.checked; ls.set('alwaysHigh', S.alwaysHigh ? '1' : '0'); });
+$('#setAutoPrint').addEventListener('change', e => { S.autoPrint = e.target.checked; ls.set('autoPrint', S.autoPrint ? '1' : '0'); });
 $('#setSave').addEventListener('click', () => saveCfg($('#setUrl').value.trim(), $('#setToken').value.trim(), ''));
 async function saveCfg(url, token, first) {
   S.cfg = { url, token };
