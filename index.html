@@ -1326,10 +1326,9 @@ async function linkPhotos(b) {
 /* ================= label printing =================
    "Print label" sends the customer name (and piece, e.g. 1 / 2) to the backend; the print helper on the
    laptop prints the 700 Islands label on the D520 a few seconds later (tools/print_agent.py). */
-function pieceOf(b) {
-  const m = [...(b.flags || []), ...(b.badges || [])].join(' ').match(/\b(\d+)\s*(?:OF|\/)\s*(\d+)\b/);
-  return m && +m[1] >= 1 && +m[1] <= +m[2] && +m[2] <= 99 ? `${m[1]} / ${m[2]}` : '1 / 1';
-}
+/* Every box's label says 1 / 1 (operator's rule: one box = one piece). A "2 OF 2" printed on the carrier's
+   label does NOT carry over; numbered labels (1 / N … N / N) only come from "Number them" in the print pop-up. */
+function pieceOf() { return '1 / 1'; }
 const PRINT_MAX = 20;
 /* n labels → backend jobs: the same label in batches of up to 5 copies, or one job per numbered label (1 / n … n / n). */
 function printJobs(b, n, numbered) {
