@@ -1,5 +1,8 @@
 /**
- * 700 Islands Intake — backend v4 (Google Apps Script web app).
+ * 700 Islands Intake — backend v5 (Google Apps Script web app).
+ *
+ * v5: label printing. "Print label" in the app queues a job (printAdd); the print helper on the laptop
+ * asks for waiting jobs (printPeek, a count only, then printTake) and confirms each one (printDone).
  *
  * v4: link another device without typing the access code. The new device asks for a 6-digit number
  * (pairStart, no code needed), shows it and waits (pairPoll); an already-linked device types the number
@@ -41,13 +44,15 @@ const DEFAULTS = {
 const PROPS = PropertiesService.getScriptProperties();
 const prop = k => PROPS.getProperty(k) || DEFAULTS[k] || '';
 const MON = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-const VERSION = 4;
+const VERSION = 5;
 
 function doGet() { return out({ ok: true, app: '700 Islands Intake backend', v: VERSION }); }
 
 function doPost(e) {
   try {
     const req = JSON.parse(e.postData.contents);
+    // The label printer asks "anything waiting?" every few seconds; the answer is only a count.
+    if (req.op === 'printPeek') return out(printPeek_());
     const token = PROPS.getProperty('INTAKE_TOKEN');
     if (!token) return out({ error: 'INTAKE_TOKEN is not set in the script’s Script properties.' });
     // Linking a new device needs no access code: it only gets one after a linked device types its number.
@@ -67,6 +72,9 @@ function doPost(e) {
       case 'append': return out(appendRows_(req.rows || [], !!req.checkDupes));
       case 'update': return out(updateRow_(req));
       case 'photos': return out(savePhotos_(req));
+      case 'printAdd': return out(printAdd_(req));
+      case 'printTake': return out(printTake_());
+      case 'printDone': return out(printDone_(req));
     }
     return out({ error: 'Unknown request.' });
   } catch (err) {
@@ -161,6 +169,49 @@ function pairApprove_(req, who) {
     c.put('pair:' + code, JSON.stringify(p), left);
     c.put('pairId:' + p.id, code, left);
     return { ok: true, name: p.name };
+  });
+}
+
+/* ---------------- Label printing ----------------
+   "Print label" in the app puts a job here; the print helper on the laptop (tools/print_agent.py) picks it
+   up and prints the 700 Islands label on the D520. Jobs wait in the script cache for up to 6 hours. A job
+   taken but not confirmed printed is handed out again after 2 minutes. */
+const PRINT_TTL = 21600;
+const printQ_ = c => JSON.parse(c.get('printQ') || '[]');
+function printPeek_() {
+  const c = cache_(), now = Date.now();
+  c.put('printSeen', String(now), PRINT_TTL);
+  return { n: printQ_(c).filter(j => !j.taken || now - j.taken > 120000).length };
+}
+function printAdd_(req) {
+  const name = String(req.name || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  if (!name) throw new Error('No customer name to print.');
+  const piece = String(req.piece || '').replace(/[^0-9 \/]/g, '').trim().slice(0, 12) || '1 / 1';
+  const copies = Math.min(5, Math.max(1, parseInt(req.copies, 10) || 1));
+  return withLock_(() => {
+    const c = cache_(), q = printQ_(c);
+    const job = { id: rand_().slice(0, 16), name, piece, copies, at: Date.now() };
+    q.push(job);
+    c.put('printQ', JSON.stringify(q.slice(-100)), PRINT_TTL);
+    const seen = +(c.get('printSeen') || 0);
+    return { ok: true, id: job.id, waiting: q.length, printerOnline: Date.now() - seen < 60000 };
+  });
+}
+function printTake_() {
+  return withLock_(() => {
+    const c = cache_(), q = printQ_(c), now = Date.now();
+    const jobs = q.filter(j => !j.taken || now - j.taken > 120000);
+    jobs.forEach(j => { j.taken = now; });
+    c.put('printQ', JSON.stringify(q), PRINT_TTL);
+    return { jobs: jobs.map(j => ({ id: j.id, name: j.name, piece: j.piece, copies: j.copies })) };
+  });
+}
+function printDone_(req) {
+  const ids = (Array.isArray(req.ids) ? req.ids : []).map(String);
+  return withLock_(() => {
+    const c = cache_();
+    c.put('printQ', JSON.stringify(printQ_(c).filter(j => ids.indexOf(j.id) < 0)), PRINT_TTL);
+    return { ok: true };
   });
 }
 
