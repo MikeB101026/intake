@@ -469,6 +469,7 @@ const S = {
   sharp: ls.get('sharp2') !== '0', autoSort: ls.get('autoSort') !== '0',
   autoSend: ls.get('autoSend') !== '0', alwaysHigh: ls.get('alwaysHigh') === '1', autoPrint: ls.get('autoPrint') === '1',
   autoPrintN: Math.min(20, Math.max(1, parseInt(ls.get('autoPrintN'), 10) || 1)), pp: null,
+  nextRowSeen: +ls.get('nextRowSeen') || 0,
   bv: 0, sortP: new Map(), held: new Set(), sending: new Set(), linking: null, printing: new Set()
 };
 const photoUrl = id => {
@@ -1203,17 +1204,27 @@ const dirtyBoxes = () => allBoxes().filter(b => b.day === S.day && b.sheetRow &&
 /* ONE TAP: checks for repeats, writes the rows, then saves the photos in the background.
    The boxes lock as "Sending…" the moment it's tapped, so there's nothing to tap twice. */
 async function planSend(only, auto) {
-  const list = (only || sendable()).filter(b => !b.sheetRow && !S.sending.has(b.id)); if (!list.length || S.busy) return;
+  let list = (only || sendable()).filter(b => !b.sheetRow && !S.sending.has(b.id)); if (!list.length || S.busy) return;
   S.busy = true; for (const b of list) S.sending.add(b.id); render();
   barMsg(`Sending ${list.length} box${list.length === 1 ? '' : 'es'}…`);
   try {
+    // Remember that this box was sent and how far the sheet went before it: if the backend writes the row but its
+    // answer never reaches the phone (slow Google), the next try finds the row and knows it's this box's own.
+    await Promise.all(list.map(b => { if (!b.sendTry) b.sendTry = { at: Date.now(), from: S.nextRowSeen || 0 }; return putBox(b); }));   // the FIRST try counts
     let hits;
     if (await backendV() >= 3) {                      // v3+ backend: repeat check + write in one round trip (an early v2 ignored checkDupes)
       const r = await api('append', { rows: rowsOf(list), checkDupes: true });
-      if (!r.dupes) return await finishSend(list, r.placed);
+      if (!r.dupes) return await finishSend(list, r.placed, r.nextRow);
       hits = r.dupes;
     } else hits = (await api('dupes', { trackings: list.map(b => b.row.tracking) })).hits;
-    const dupes = list.filter(b => hits[b.row.tracking]).map(b => ({ b, row: hits[b.row.tracking] }));
+    let dupes = list.filter(b => hits[b.row.tracking]).map(b => ({ b, row: hits[b.row.tracking] }));
+    const own = dupes.filter(d => isOwnLostRow(d.b, d.row));
+    if (own.length) {
+      await adoptRows(own);
+      dupes = dupes.filter(d => !own.includes(d));
+      list = list.filter(b => !own.some(d => d.b.id === b.id));
+      if (!list.length) { S.busy = false; barMsg(''); render(); autoSend(); return; }
+    }
     if (!dupes.length) return await executeSend(list);
     for (const d of dupes) S.sending.delete(d.b.id);
     if (auto) {                                       // automatic sending never decides about repeats: hold it for the operator
@@ -1227,6 +1238,19 @@ async function planSend(only, auto) {
   } catch (e) { sendFailed(list, e); }
 }
 const rowsOf = list => list.map(b => ({ id: b.id, day: b.day, cells: cells(b).slice(0, 7) }));
+/* A repeat that is really this box's own earlier send (the row went in, the reply got lost): the box was sent
+   before, the row sits below where the sheet ended at that send, and no other box here owns that row. */
+function isOwnLostRow(b, row) {
+  return !!(b.sendTry && b.sendTry.from && +row >= b.sendTry.from && !allBoxes().some(o => o.id !== b.id && o.sheetRow === +row));
+}
+/* Mark boxes as sent at the row they already have in the sheet — nothing is written again. */
+async function adoptRows(ds) {
+  for (const d of ds) {
+    await patchBox(d.b.id, x => { x.sheetRow = +d.row; x.status = 'sent'; x.sentCells = cells(x); x.sentAt = Date.now(); delete x.sendTry; });
+    S.held.delete(d.b.id); S.sending.delete(d.b.id); queueLinks(d.b.id);
+  }
+  notice(`✓ ${ds.map(d => `Box #${d.b.seq} was already in the sheet at row ${d.row}`).join('; ')} — marked as sent, nothing written twice.`);
+}
 function sendFailed(list, e) {
   for (const b of list) S.sending.delete(b.id);
   S.busy = false; barMsg(''); notice(e.message, true); S.autoSendFails = (S.autoSendFails || 0) + 1; render();
@@ -1241,12 +1265,14 @@ async function executeSend(list) {
   if (!list.length) return;
   S.busy = true; S.plan = null; for (const b of list) S.sending.add(b.id); renderPlan(); render();
   barMsg(`Writing ${list.length} row${list.length === 1 ? '' : 's'}…`);
-  try { await finishSend(list, (await api('append', { rows: rowsOf(list) })).placed); }
+  try { const r = await api('append', { rows: rowsOf(list) }); await finishSend(list, r.placed, r.nextRow); }
   catch (e) { sendFailed(list, e); }
 }
-async function finishSend(list, placed) {
+async function finishSend(list, placed, nextRow) {
   S.autoSendFails = 0;
-  for (const p of placed) await patchBox(p.id, x => { x.sheetRow = p.row; x.status = 'sent'; x.sentCells = cells(x); x.sentAt = Date.now(); });
+  const end = Math.max(+nextRow || 0, ...placed.map(p => +p.row + 1));   // where the sheet ends now (see isOwnLostRow)
+  if (end > (S.nextRowSeen || 0)) { S.nextRowSeen = end; ls.set('nextRowSeen', String(end)); }
+  for (const p of placed) await patchBox(p.id, x => { x.sheetRow = p.row; x.status = 'sent'; x.sentCells = cells(x); x.sentAt = Date.now(); delete x.sendTry; });
   for (const b of list) S.sending.delete(b.id);
   S.busy = false;
   const rs = placed.map(p => p.row), seqs = placed.map(p => '#' + (S.boxes.get(p.id) || {}).seq).join(', ');
@@ -1486,8 +1512,18 @@ function renderPlan() {
   if (!S.plan) { el.hidden = true; el.innerHTML = ''; return; }
   const { list, dupes } = S.plan;
   el.innerHTML = `<b>${dupes.length} of these ${dupes.length === 1 ? 'is' : 'are'} already in the sheet:</b> ` + dupes.map(d => `#${d.b.seq} ${esc(d.b.row.customer)} (row ${d.row})`).join(', ') +
-    `<div class="row-actions" style="margin-top:8px"><button type="button" class="btn small" id="planSkip">Skip ${dupes.length === 1 ? 'it' : 'those'}</button><button type="button" class="btn small" id="planAll">Send all anyway</button><button type="button" class="btn small" id="planCancel">Cancel</button></div>`;
+    `<div class="muted" style="margin-top:6px">Sent before and the app just didn’t hear back? Tap “Mark as sent” — nothing is written again.</div>` +
+    `<div class="row-actions" style="margin-top:8px">` +
+    dupes.map((d, i) => `<button type="button" class="btn small primary" data-adopt="${i}">#${d.b.seq} is row ${d.row} — mark as sent</button>`).join('') +
+    `<button type="button" class="btn small" id="planSkip">Skip ${dupes.length === 1 ? 'it' : 'those'}</button><button type="button" class="btn small" id="planAll">Send all anyway</button><button type="button" class="btn small" id="planCancel">Cancel</button></div>`;
   el.hidden = false;
+  el.querySelectorAll('[data-adopt]').forEach(btn => btn.onclick = async () => {
+    const d = dupes[+btn.dataset.adopt]; if (!d) return;
+    await adoptRows([d]);
+    S.plan.dupes = dupes.filter(x => x !== d); S.plan.list = list.filter(b => b.id !== d.b.id);
+    if (!S.plan.dupes.length) { const rest = S.plan.list; S.plan = null; renderPlan(); if (rest.length) executeSend(rest); else render(); }
+    else renderPlan();
+  });
   $('#planSkip').onclick = () => executeSend(list.filter(b => !dupes.some(d => d.b.id === b.id)));
   $('#planAll').onclick = () => executeSend(list);
   $('#planCancel').onclick = () => { S.plan = null; renderPlan(); };
