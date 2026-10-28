@@ -124,6 +124,18 @@ button{cursor:pointer}
 .sheet label{display:flex;flex-direction:column;gap:4px;font-weight:600}
 .sheet input[type=text],.sheet input[type=password],.sheet input[type=url]{border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:var(--card)}
 .sheet .check{flex-direction:row;align-items:center;gap:8px;font-weight:500}
+.pp-set{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.pp-set b{font:700 20px/1 var(--f-mono);min-width:2ch;text-align:center}
+.pp-step-s{width:40px;font-size:20px}
+.pp{position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.55);display:flex;align-items:flex-end;justify-content:center}
+.pp[hidden]{display:none}
+.pp-in{background:var(--card);width:100%;max-width:480px;border-radius:14px 14px 0 0;padding:18px 16px calc(18px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:14px}
+.pp-in > b{font:700 22px/1.1 var(--f-display);text-transform:uppercase}
+.pp-count{display:flex;align-items:center;justify-content:center;gap:22px}
+.pp-step{width:68px;height:68px;font-size:34px;line-height:1;padding:0}
+#ppN{font:700 48px/1 var(--f-mono);min-width:2.5ch;text-align:center}
+.pp .check{display:flex;flex-direction:row;align-items:center;gap:8px;font-weight:500}
+.pp .row-actions .btn{flex:1}
 .link-box{border:1px solid var(--line);border-radius:10px;background:var(--card);padding:12px;display:flex;flex-direction:column;gap:8px;align-items:flex-start}
 .pair-code{font:700 56px/1 var(--f-mono);letter-spacing:.1em;padding:6px 0}
 .sheet input.pair-in{font:700 22px/1 var(--f-mono);letter-spacing:.15em;width:8.5em;border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:var(--bg)}
@@ -236,9 +248,19 @@ button{cursor:pointer}
     <label class="check"><input type="checkbox" id="setAutoSort"> Sort and read as soon as I tap DONE in the camera</label>
     <label class="check"><input type="checkbox" id="setAutoSend"> Send clean boxes to the sheet automatically (anything with a warning still waits for you)</label>
     <label class="check"><input type="checkbox" id="setAutoPrint"> Print the label automatically when a box goes into the sheet (the “Print label” button always works too)</label>
+    <div class="pp-set"><span>Labels per box when printing automatically</span><button type="button" class="btn small pp-step-s" id="apMinus" aria-label="One label fewer">−</button><b id="apN">1</b><button type="button" class="btn small pp-step-s" id="apPlus" aria-label="One label more">+</button></div>
     <label class="check"><input type="checkbox" id="setHigh"> Always read at high effort (slower; normally it reads at medium and switches to high by itself when anything looks unsure)</label>
     <div class="muted" id="storeInfo"></div>
     <button class="btn danger" id="purgeBtn" type="button">Delete photos of boxes already in the sheet (older than 7 days)</button>
+  </div>
+</div>
+<div class="pp" id="printPrompt" hidden role="dialog" aria-modal="true" aria-labelledby="ppTitle">
+  <div class="pp-in">
+    <b id="ppTitle">Print labels</b>
+    <div class="muted" id="ppName"></div>
+    <div class="pp-count"><button type="button" class="btn pp-step" id="ppMinus" aria-label="One label fewer">−</button><output id="ppN" aria-live="polite">1</output><button type="button" class="btn pp-step" id="ppPlus" aria-label="One label more">+</button></div>
+    <label class="check"><input type="checkbox" id="ppNumber"> Number them (1 / 3, 2 / 3, 3 / 3) instead of printing the same label</label>
+    <div class="row-actions"><button type="button" class="btn primary" id="ppGo">Print 1 label</button><button type="button" class="btn" id="ppCancel">Cancel</button></div>
   </div>
 </div>
 
@@ -446,6 +468,7 @@ const S = {
   cfg: { url: ls.get('backendUrl') || '', token: ls.get('backendToken') || '' },
   sharp: ls.get('sharp2') !== '0', autoSort: ls.get('autoSort') !== '0',
   autoSend: ls.get('autoSend') !== '0', alwaysHigh: ls.get('alwaysHigh') === '1', autoPrint: ls.get('autoPrint') === '1',
+  autoPrintN: Math.min(20, Math.max(1, parseInt(ls.get('autoPrintN'), 10) || 1)), pp: null,
   bv: 0, sortP: new Map(), held: new Set(), sending: new Set(), linking: null, printing: new Set()
 };
 const photoUrl = id => {
@@ -1232,7 +1255,7 @@ async function finishSend(list, placed) {
   notice(`✓ Box ${seqs} is in the sheet (${where}). Photos are saving in the background.`);
   setTimeout(() => { if ($('#notice').textContent.startsWith('✓')) notice(null); }, 6000);
   for (const p of placed) queueLinks(p.id);
-  if (S.autoPrint) for (const p of placed) { const b = S.boxes.get(p.id); if (b) printLabel(b, true); }   // setting: label prints as each box goes in
+  if (S.autoPrint) for (const p of placed) { const b = S.boxes.get(p.id); if (b) printLabel(b, true, S.autoPrintN); }   // setting: label(s) print as each box goes in
   render();
   autoSend();
 }
@@ -1281,19 +1304,59 @@ function pieceOf(b) {
   const m = [...(b.flags || []), ...(b.badges || [])].join(' ').match(/\b(\d+)\s*(?:OF|\/)\s*(\d+)\b/);
   return m && +m[1] >= 1 && +m[1] <= +m[2] && +m[2] <= 99 ? `${m[1]} / ${m[2]}` : '1 / 1';
 }
-async function printLabel(b, auto) {
+const PRINT_MAX = 20;
+/* n labels → backend jobs: the same label in batches of up to 5 copies, or one job per numbered label (1 / n … n / n). */
+function printJobs(b, n, numbered) {
+  if (numbered && n > 1) return Array.from({ length: n }, (_, i) => ({ piece: `${i + 1} / ${n}`, copies: 1 }));
+  const piece = pieceOf(b), jobs = [];
+  for (let left = n; left > 0; left -= 5) jobs.push({ piece, copies: Math.min(5, left) });
+  return jobs;
+}
+async function printLabel(b, auto, n, numbered) {
   const name = caps(b.row.customer);
+  n = Math.min(PRINT_MAX, Math.max(1, parseInt(n, 10) || 1));
   if (!name || S.printing.has(b.id)) return;
   S.printing.add(b.id); render();
   try {
-    const j = await api('printAdd', { name, piece: pieceOf(b) });
-    if (j.error || !j.ok) throw new Error(j.error || 'The backend didn’t take the label.');
-    if (!j.printerOnline) notice(`Label for ${name} is waiting — the label printer on the laptop isn’t running. It prints as soon as it starts.`, true);
-    else if (!auto) notice(`Label for ${name} sent to the printer.`);              // automatic prints stay quiet when all is well
+    let j = null;
+    for (const job of printJobs(b, n, numbered)) {
+      j = await api('printAdd', { name, piece: job.piece, copies: job.copies });
+      if (j.error || !j.ok) throw new Error(j.error || 'The backend didn’t take the label.');
+    }
+    const what = n === 1 ? `Label for ${name}` : `${n} labels for ${name}`;
+    if (!j.printerOnline) notice(`${what} ${n === 1 ? 'is' : 'are'} waiting — the label printer on the laptop isn’t running. ${n === 1 ? 'It prints' : 'They print'} as soon as it starts.`, true);
+    else if (!auto) notice(`${what} sent to the printer.`);              // automatic prints stay quiet when all is well
   } catch (e) {
     notice(/Unknown request/.test(e.message) ? 'The backend needs the printing update (v5) first.' : `Label didn’t go to the printer: ${e.message}`, true);
   } finally { S.printing.delete(b.id); render(); }
 }
+/* "Print label" opens this: + / − picks how many, then Print. */
+function openPrintPrompt(b) {
+  if (!caps(b.row.customer) || S.printing.has(b.id)) return;
+  S.pp = { id: b.id, n: 1 };
+  $('#ppName').textContent = `${caps(b.row.customer)} · ${pieceOf(b)}`;
+  $('#ppNumber').checked = false;
+  ppShow(); $('#printPrompt').hidden = false; $('#ppPlus').focus();
+}
+function ppShow() {
+  const n = S.pp.n;
+  $('#ppN').textContent = String(n);
+  $('#ppMinus').disabled = n <= 1; $('#ppPlus').disabled = n >= PRINT_MAX;
+  $('#ppNumber').disabled = n <= 1;
+  $('#ppGo').textContent = `Print ${n} label${n === 1 ? '' : 's'}`;
+}
+function ppClose() { $('#printPrompt').hidden = true; S.pp = null; }
+$('#ppMinus').addEventListener('click', () => { if (S.pp) { S.pp.n = Math.max(1, S.pp.n - 1); ppShow(); } });
+$('#ppPlus').addEventListener('click', () => { if (S.pp) { S.pp.n = Math.min(PRINT_MAX, S.pp.n + 1); ppShow(); } });
+$('#ppCancel').addEventListener('click', ppClose);
+$('#printPrompt').addEventListener('click', e => { if (e.target === e.currentTarget) ppClose(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && S.pp) ppClose(); });
+$('#ppGo').addEventListener('click', () => {
+  if (!S.pp) return;
+  const b = S.boxes.get(S.pp.id), n = S.pp.n, numbered = $('#ppNumber').checked;
+  ppClose();
+  if (b) printLabel(b, false, n, numbered);
+});
 const unlinked = () => allBoxes().filter(b => b.day === S.day && b.sheetRow && !b.photosLinked && b.photos.length && !LINK.q.includes(b.id) && S.linking !== b.id);
 async function updateRows() {
   const list = dirtyBoxes(); if (!list.length || S.busy) return;
@@ -1475,7 +1538,7 @@ document.addEventListener('click', e => {
     case 'reread': S.held.delete(id); queueRead(id, { effort: 'high', careful: true }); break;   // "Read again" always reads at high
     case 'cam': openCamera(id); break;
     case 'send1': planSend([b]); break;
-    case 'print': printLabel(b); break;
+    case 'print': openPrintPrompt(b); break;
     case 'upd': updateRows(); break;
     case 'del': S.confirmDel = id; render(); break;
     case 'del-no': S.confirmDel = null; render(); break;
@@ -1548,7 +1611,7 @@ function openSettings() {
   $('#setUrl').value = S.cfg.url; $('#setToken').value = S.cfg.token;
   $('#linkOther').hidden = !S.cfg.token; $('#devList').textContent = '';
   $('#setSharp').checked = S.sharp; $('#setAutoSort').checked = S.autoSort;
-  $('#setAutoSend').checked = S.autoSend; $('#setHigh').checked = S.alwaysHigh; $('#setAutoPrint').checked = S.autoPrint;
+  $('#setAutoSend').checked = S.autoSend; $('#setHigh').checked = S.alwaysHigh; $('#setAutoPrint').checked = S.autoPrint; apShow();
   $('#settings').hidden = false; storageInfo();
 }
 async function storageInfo() {
@@ -1561,6 +1624,10 @@ $('#setAutoSort').addEventListener('change', e => { S.autoSort = e.target.checke
 $('#setAutoSend').addEventListener('change', e => { S.autoSend = e.target.checked; ls.set('autoSend', S.autoSend ? '1' : '0'); if (S.autoSend) autoSend(); });
 $('#setHigh').addEventListener('change', e => { S.alwaysHigh = e.target.checked; ls.set('alwaysHigh', S.alwaysHigh ? '1' : '0'); });
 $('#setAutoPrint').addEventListener('change', e => { S.autoPrint = e.target.checked; ls.set('autoPrint', S.autoPrint ? '1' : '0'); });
+function apShow() { $('#apN').textContent = String(S.autoPrintN); $('#apMinus').disabled = S.autoPrintN <= 1; $('#apPlus').disabled = S.autoPrintN >= 20; }
+function apSet(n) { S.autoPrintN = Math.min(20, Math.max(1, n)); ls.set('autoPrintN', String(S.autoPrintN)); apShow(); }
+$('#apMinus').addEventListener('click', () => apSet(S.autoPrintN - 1));
+$('#apPlus').addEventListener('click', () => apSet(S.autoPrintN + 1));
 $('#setSave').addEventListener('click', () => saveCfg($('#setUrl').value.trim(), $('#setToken').value.trim(), ''));
 async function saveCfg(url, token, first) {
   S.cfg = { url, token };
