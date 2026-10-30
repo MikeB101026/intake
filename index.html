@@ -106,6 +106,8 @@ button{cursor:pointer}
 .lines{display:flex;flex-direction:column;gap:6px}
 .line{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;font-size:14px;border-top:1px dashed var(--line2);padding-top:6px}
 .line .thumb{width:44px;height:44px}
+.line-tools{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.line-tools .btn{min-width:40px}
 .reasons{background:var(--flag-bg);color:var(--flag-ink);border-radius:8px;padding:8px 10px;font-size:14px}
 .reasons ul{margin:4px 0 0;padding-left:18px}
 .err{background:var(--bad-bg);color:var(--bad-ink);border-radius:8px;padding:8px 10px;font-size:14px}
@@ -323,7 +325,8 @@ BILL OF LADING / FREIGHT (pallets, crates, truck deliveries)
 CONTENTS RULES (what was inside)
 - One entry per distinct item: "BRAND ITEM" in CAPS, short, no marketing text, NO SKU / model / FNSKU codes. Clothing: the type of clothing only.
 - Packs: items wrapped together in plastic, or sold as one case -> "BRAND ITEM N PACK", and qty = number of packs.
-- Counting: every inside photo is its own unit — two photos of the same product = qty 2, unless one photo is plainly a close-up of a unit already shown. When a packing slip or invoice lists quantities, the slip wins.
+- Counting: count physical units, not photos. The operator often documents ONE item from several sides: other angles, close-ups, the back of the box, its sticker or barcode are all the SAME unit = qty 1, even when each photo shows different words. Count more than 1 only with evidence: several units visible together in one photo, or photos that clearly show different units. If two photos could be one unit or two, use qty 1 and add the flag "COUNT UNSURE — <ITEM>: SAME ITEM OR MORE?".
+- Packing slip or invoice in the photos: its lines and quantities ARE the contents. The slip itself is not an item. A photo of an item proves its slip line and never adds to the quantity (slip says 3, one photo of it = qty 3). An item photographed but not on the slip gets its own line and the flag "NOT ON SLIP — <ITEM>".
 - Order: the packing slip's order when there is one, otherwise photo order.
 - Product names printed on the outside carton may prefill contents only when there are no inside photos (add the flag "CONTENTS FROM CARTON PRINT").
 
@@ -379,9 +382,9 @@ const ITEM_PROMPT = `This ONE photo shows something that was INSIDE a package: a
 Reply with ONLY one JSON object: {"items":[{"item":"","qty":1}],"slip":false,"invoice":false,"flags":[]}
 - items: what this photo shows, "BRAND ITEM" in CAPS per the rules (no SKU codes); qty = units or packs visible in THIS photo.
 - If it is a packing slip or invoice: list its lines with their quantities and set slip true; invoice true only when it shows prices.`;
-const MERGE_PROMPT = (photosJson, note) => `These are per-photo readings of the INSIDE photos of ONE package, in the order they were taken (n = photo number):
+const MERGE_PROMPT = (photosJson, note) => `The images are the INSIDE photos of ONE package, in the order they were taken (image 1 = photo n 1). Each photo was read on its own, so one item shot from two sides may have two different readings:
 ${photosJson}
-${note ? `The operator's note (trust it over the photos): "${note}"\n` : ''}Combine them into the box's CONTENTS following the counting rules: every photo is its own unit (the same product in two photos = qty 2), packs count as packs, a packing slip's quantities win over photo counts, order = slip order if there is a slip, otherwise photo order. Merge entries that name the same product (keep the clearest name).
+${note ? `The operator's note (trust it over the photos): "${note}"\n` : ''}LOOK AT THE IMAGES and combine the readings into the box's CONTENTS, following the counting rules: count physical units, not photos. Photos that show the same unit from another angle, up close or from the back are ONE line, qty 1, with the clearest name, even when their readings differ. Add units only with evidence (several together in one photo, or clearly different units); if you can't tell, qty 1 plus the flag "COUNT UNSURE — <ITEM>: SAME ITEM OR MORE?". Packs count as packs. If a photo has slip true, the slip's lines and quantities are the contents, in slip order: item photos attach to their slip line (list them in its photos) and never add to its quantity, and an item not on the slip gets its own line with the flag "NOT ON SLIP — <ITEM>". Without a slip, keep photo order.
 Reply with ONLY one JSON object: {"contents":[{"item":"","qty":1,"photos":[1]}],"flags":[]} — photos = the photo numbers each line came from.`;
 const VERIFY_PROMPT = `This is a shipping label or a bill of lading (usually a close-up crop of it). Read it independently and carefully.
 Return ONLY JSON: {"tracking":"","weight_printed":"","weight_unit":"lb","sure":true}
@@ -1108,7 +1111,7 @@ async function readAhead(b0, labels, items) {
     contents = clean(per[0]).map(c => ({ line: contentsLine(c), photos: [items[0].id] }));
   } else if (items.length) {
     const photosJson = JSON.stringify(per.map((r, i) => ({ n: i + 1, slip: !!(r && r.slip), items: clean(r).map(x => ({ item: caps(x.item), qty: parseInt(x.qty, 10) || 1 })) })));
-    const m = await claude({ system: SYS, prompt: MERGE_PROMPT(photosJson, b0.note), effort: 'low', fast: true });
+    const m = await claude({ system: SYS, prompt: MERGE_PROMPT(photosJson, b0.note), effort: 'low', fast: true, images: items.slice(0, 20).map(p => ({ blob: p.blob, max: SIZE.sort })) });
     contents = ((m && m.contents) || []).filter(c => c && c.item).map(c => ({ line: contentsLine(c), photos: (Array.isArray(c.photos) ? c.photos : []).map(n => items[(parseInt(n, 10) || 0) - 1]).filter(Boolean).map(p => p.id) }));
     for (const f of (m && m.flags) || []) if (caps(f)) flags.push(caps(f));
   } else if (Array.isArray(res.carton_items) && res.carton_items.some(c => c && c.item)) {
@@ -1160,6 +1163,7 @@ function reasons(b) {
   if (/^TBA/.test(tk) && tk.length !== 15) r.push(`Amazon TBA numbers have 15 characters — this one has ${tk.length}.`);
   if (row.weight === '' || row.weight == null) r.push('No weight — weigh it and type it in.');
   if (/NO NAME ON LABEL|UNREADABLE/.test(row.customer || '')) r.push('Customer name missing or partly unreadable.');
+  if (!(b.edited || {}).contents) for (const f of b.flags || []) if (/COUNT UNSURE|NOT ON SLIP/.test(f)) r.push(`${f} — fix it with + / − or “Same as above”, or tap “Looks good”.`);
   for (const d of dupesOf(b)) r.push(`Same tracking as box #${d.seq} on ${capsDate(d.day)}${d.day === b.day ? ' — same box photographed twice? Keep one.' : ' — check you don’t have it twice.'}`);
   return r;
 }
@@ -1419,6 +1423,17 @@ function renderPending() {
   $('#pendThumbs').innerHTML = list.slice(-30).map(p => `<span class="thumb"><img src="${esc(photoUrl(p.id))}" alt="">${p.split ? '<span class="tag cut">NEW</span>' : ''}</span>`).join('');
   $('#pendSort').disabled = sorting; $('#pendSort').textContent = sorting ? 'Sorting…' : 'SORT INTO BOXES & READ';
 }
+/* One-tap count fixes on the card: + / − on a contents line, or "Same as above" when two lines are one item. */
+const lineQty = line => parseInt((String(line).match(/\((\d+) TOTAL\)$/) || [])[1], 10) || 1;
+function setProof(id, fn) {
+  patchBox(id, x => { x.proof = fn(x.proof.slice()); x.row.contents = x.proof.map(c => c.line).join(' ///\n'); x.edited.contents = true; });
+}
+function lineStep(id, i, d) {
+  setProof(id, p => { if (p[i]) p[i] = { ...p[i], line: contentsLine({ item: p[i].line, qty: Math.max(1, lineQty(p[i].line) + d) }) }; return p; });
+}
+function lineSame(id, i) {          // the upper line's name and count stay: it's one item, not two added together
+  setProof(id, p => { if (i > 0 && p[i]) { p[i - 1] = { ...p[i - 1], photos: [...new Set([...(p[i - 1].photos || []), ...(p[i].photos || [])])] }; p.splice(i, 1); } return p; });
+}
 function cardHtml(b) {
   const vs = viewStatus(b), row = b.row, ex = S.expanded.has(b.id);
   const last4 = row.tracking ? '…' + String(row.tracking).replace(/\s/g, '').slice(-4) : '';
@@ -1447,7 +1462,10 @@ function cardHtml(b) {
       <div class="f wide"><label for="co-${b.id}">Contents</label><textarea id="co-${b.id}" data-field="contents" spellcheck="false">${esc(row.contents)}</textarea></div>
     </div></div>`;
   const proof = (b.proof || []).filter(c => c.photos && c.photos.length);
-  if (proof.length) h += `<div class="lines"><div class="muted">Photo proof — each contents line next to its photos</div>` +
+  const allProof = b.proof || [];
+  if (allProof.length && allProof.map(c => c.line).join(' ///\n') === row.contents) h += `<div class="lines"><div class="muted">Photo proof — each contents line next to its photos. Fix a count with + / −; two lines that are one item: “Same as above”.</div>` +
+    allProof.map((c, i) => `<div class="line"><span>${esc(c.line)}<span class="line-tools"><button type="button" class="btn small" data-act="lineqty" data-i="${i}" data-d="-1" aria-label="One fewer" ${lineQty(c.line) <= 1 ? 'disabled' : ''}>−</button><button type="button" class="btn small" data-act="lineqty" data-i="${i}" data-d="1" aria-label="One more">+</button>${i ? `<button type="button" class="btn small" data-act="linesame" data-i="${i}">Same as above</button>` : ''}</span></span><span class="thumbs">${(c.photos || []).slice(0, 4).map(thumbHtml).join('')}</span></div>`).join('') + `</div>`;
+  else if (proof.length) h += `<div class="lines"><div class="muted">Photo proof — each contents line next to its photos</div>` +
     proof.map(c => `<div class="line"><span>${esc(c.line)}</span><span class="thumbs">${c.photos.slice(0, 4).map(thumbHtml).join('')}</span></div>`).join('') + `</div>`;
   else if (items.length) h += `<div class="thumbs">${items.map(p => thumbHtml(p.id)).join('')}</div>`;
   h += `<div class="row-actions">
@@ -1574,6 +1592,8 @@ document.addEventListener('click', e => {
     case 'cam': openCamera(id); break;
     case 'send1': planSend([b]); break;
     case 'print': openPrintPrompt(b); break;
+    case 'lineqty': lineStep(id, +a.dataset.i, +a.dataset.d); break;
+    case 'linesame': lineSame(id, +a.dataset.i); break;
     case 'upd': updateRows(); break;
     case 'del': S.confirmDel = id; render(); break;
     case 'del-no': S.confirmDel = null; render(); break;
