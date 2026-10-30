@@ -106,6 +106,13 @@ button{cursor:pointer}
 .lines{display:flex;flex-direction:column;gap:6px}
 .line{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;font-size:14px;border-top:1px dashed var(--line2);padding-top:6px}
 .line .thumb{width:44px;height:44px}
+.others{display:flex;flex-direction:column;gap:8px;margin-top:14px}
+.others > b{font:700 16px/1.2 var(--f-display);text-transform:uppercase}
+.other{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.other summary{cursor:pointer;display:flex;flex-direction:column;gap:2px}
+.other summary span{font-size:14px;color:var(--muted,inherit);overflow-wrap:anywhere}
+.other-body{margin-top:8px;display:flex;flex-direction:column;gap:6px;font-size:14px;overflow-wrap:anywhere}
+.other-body .ct{white-space:pre-line}
 .line-tools{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
 .line-tools .btn{min-width:40px}
 .reasons{background:var(--flag-bg);color:var(--flag-ink);border-radius:8px;padding:8px 10px;font-size:14px}
@@ -123,6 +130,8 @@ button{cursor:pointer}
 .sheet{position:fixed;inset:0;z-index:30;background:var(--bg);overflow:auto}
 .sheet-in{max-width:620px;margin:0 auto;padding:calc(16px + env(safe-area-inset-top,0px)) 16px 40px;display:flex;flex-direction:column;gap:14px}
 .sheet h1{font:700 26px/1.1 var(--f-display);text-transform:uppercase;margin:0}
+.sheet-top{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:12px;background:var(--bg);margin:calc(-16px - env(safe-area-inset-top,0px)) 0 0;padding:calc(10px + env(safe-area-inset-top,0px)) 0 10px;border-bottom:1px solid var(--line)}
+.link-ok{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
 .sheet label{display:flex;flex-direction:column;gap:4px;font-weight:600}
 .sheet input[type=text],.sheet input[type=password],.sheet input[type=url]{border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:var(--card)}
 .sheet .check{flex-direction:row;align-items:center;gap:8px;font-weight:500}
@@ -205,6 +214,7 @@ button{cursor:pointer}
     <div class="stats" id="dayStats"></div>
   </div>
   <div class="boxes" id="boxes"></div>
+  <div class="others" id="others" hidden></div>
   <div class="empty" id="emptyList">No boxes yet. Tap <b>PHONE CAMERA</b> and shoot the box's shipping label and what's inside it, one photo per tap (<b>+ NEXT PHOTO</b> for each one), then <b>Finish this box</b>.</div>
 </div>
 
@@ -221,7 +231,8 @@ button{cursor:pointer}
 <!-- settings -->
 <div class="sheet" id="settings" hidden>
   <div class="sheet-in">
-    <h1>Settings</h1>
+    <div class="sheet-top"><button class="btn" id="setBack" type="button">← Back</button><h1>Settings</h1></div>
+    <div class="link-ok" id="linkedOk" hidden><b>✓ This device is connected.</b> <span class="muted">Everything here saves by itself.</span> <button class="btn small" id="linkAgain" type="button">Link again</button></div>
     <div class="link-box" id="linkNew">
       <b>Set up this laptop or phone</b>
       <span class="muted">No access code needed: this device shows a number, you type it on the phone that's already set up.</span>
@@ -1359,10 +1370,46 @@ async function printLabel(b, auto, n, numbered) {
     notice(/Unknown request/.test(e.message) ? 'The backend needs the printing update (v5) first.' : `Label didn’t go to the printer: ${e.message}`, true);
   } finally { S.printing.delete(b.id); render(); }
 }
+/* ================= the whole day, from any device =================
+   The sheet has every box from every device, so each device also lists the day's rows it didn't send
+   itself (read-only; photos of those stay on the device that shot them and in the Drive links). */
+S.others = new Map();
+let othersBusy = false, othersOff = false;
+async function loadOthers() {
+  if (othersOff || othersBusy || document.hidden || !S.cfg.url || !S.cfg.token) return;
+  othersBusy = true;
+  const day = S.day;
+  try { const j = await api('dayRows', { day }); S.others.set(day, j.rows || []); renderOthers(); }
+  catch (e) { if (/Unknown request/.test(e.message)) othersOff = true; }     // older backend: just the device's own boxes
+  finally { othersBusy = false; }
+}
+function otherRows() {
+  const mine = new Set(allBoxes().filter(b => b.sheetRow).map(b => +b.sheetRow));
+  return (S.others.get(S.day) || []).filter(r => !mine.has(+r.row)).sort((a, c) => c.row - a.row);
+}
+function renderOthers() {
+  const el = $('#others'), rows = otherRows();
+  el.hidden = !rows.length;
+  if (rows.length) $('#emptyList').hidden = true;
+  const open = new Set([...el.querySelectorAll('details[open]')].map(d => d.dataset.row));
+  const html = rows.length ? `<b>Also logged today — other devices or typed in (${rows.length})</b>` + rows.map(r => {
+    const [cust, trk, , wt, ship, inv, cont] = r.cells;
+    const sub = [String(trk).length > 4 ? '…' + String(trk).replace(/\s/g, '').slice(-4) : trk, wt !== '' ? wt + ' lb' : '', ship].filter(Boolean).join(' · ');
+    return `<details class="other" data-row="${r.row}"${open.has(String(r.row)) ? ' open' : ''}><summary><b>${esc(cust || 'NO NAME')}</b><span>${esc(sub)} · row ${r.row}</span></summary><div class="other-body"><div>${esc(trk)}</div><div>${esc(ship)}</div><div>${esc(inv)}</div><div class="ct">${esc(cont || '(no contents yet)')}</div><div class="row-actions"><button type="button" class="btn small" data-rprint="${r.row}">Print label</button></div></div></details>`;
+  }).join('') : '';
+  if (el.dataset.sig !== html) { el.innerHTML = html; el.dataset.sig = html; }
+}
+$('#others').addEventListener('click', e => {
+  const btn = e.target.closest('[data-rprint]'); if (!btn) return;
+  const r = otherRows().find(x => String(x.row) === btn.dataset.rprint);
+  if (r) openPrintPrompt({ id: 'row' + r.row, row: { customer: r.cells[0] } });
+});
+setInterval(loadOthers, 45000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) loadOthers(); });
 /* "Print label" opens this: + / − picks how many, then Print. */
 function openPrintPrompt(b) {
   if (!caps(b.row.customer) || S.printing.has(b.id)) return;
-  S.pp = { id: b.id, n: 1 };
+  S.pp = { id: b.id, n: 1, box: b };
   $('#ppName').textContent = `${caps(b.row.customer)} · ${pieceOf(b)}`;
   $('#ppNumber').checked = false;
   ppShow(); $('#printPrompt').hidden = false; $('#ppPlus').focus();
@@ -1382,7 +1429,7 @@ $('#printPrompt').addEventListener('click', e => { if (e.target === e.currentTar
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && S.pp) ppClose(); });
 $('#ppGo').addEventListener('click', () => {
   if (!S.pp) return;
-  const b = S.boxes.get(S.pp.id), n = S.pp.n, numbered = $('#ppNumber').checked;
+  const b = S.pp.box, n = S.pp.n, numbered = $('#ppNumber').checked;
   ppClose();
   if (b) printLabel(b, false, n, numbered);
 });
@@ -1554,7 +1601,7 @@ function renderCurrent() {
   $('#curText').textContent = `Box #${b.seq} in progress — ${nl ? nl + ' label' : 'no label yet'}, ${ph.length - nl} other photo${ph.length - nl === 1 ? '' : 's'}`;
   $('#curThumbs').innerHTML = ph.slice(-12).map(p => thumbHtml(p.id)).join('');
 }
-function render() { $('#todayChip').textContent = capsDate(TODAY()); renderCurrent(); renderPending(); renderList(); renderBar(); }
+function render() { $('#todayChip').textContent = capsDate(TODAY()); renderCurrent(); renderPending(); renderList(); renderOthers(); renderBar(); }
 
 /* ================= events ================= */
 $('#pendSort').addEventListener('click', sortPending);
@@ -1566,7 +1613,7 @@ $('#pendClearYes').addEventListener('click', async () => {
   for (const p of pendingPhotos()) { await delPhoto(p.id); S.photos.delete(p.id); }
   render();
 });
-$('#daySel').addEventListener('change', e => { S.day = e.target.value; render(); });
+$('#daySel').addEventListener('change', e => { S.day = e.target.value; render(); loadOthers(); });
 $('#sendBtn').addEventListener('click', () => {
   const m = $('#sendBtn').dataset.mode;
   if (!m) return;
@@ -1665,6 +1712,7 @@ $('#lbDel').addEventListener('click', async () => {
 function openSettings() {
   $('#setUrl').value = S.cfg.url; $('#setToken').value = S.cfg.token;
   $('#linkOther').hidden = !S.cfg.token; $('#devList').textContent = '';
+  $('#linkedOk').hidden = !S.cfg.token; $('#linkNew').hidden = !!S.cfg.token;   // connected: no "Link this device" to trip over
   $('#setSharp').checked = S.sharp; $('#setAutoSort').checked = S.autoSort;
   $('#setAutoSend').checked = S.autoSend; $('#setHigh').checked = S.alwaysHigh; $('#setAutoPrint').checked = S.autoPrint; apShow();
   $('#settings').hidden = false; storageInfo();
@@ -1731,12 +1779,18 @@ $('#pairStartBtn').addEventListener('click', async () => {
       pairRun++; $('#pairShow').hidden = true;
       $('#setUrl').value = url; $('#setToken').value = r.token;
       await saveCfg(url, r.token, 'Linked. ');
-      notice('This device is linked and ready.', false);
+      $('#settings').hidden = true;                      // done: straight back to the main screen
+      notice('✓ This device is connected and saved. You’re ready to go.', false);
       return;
     }
   }
 });
 $('#pairCancel').addEventListener('click', () => { pairRun++; $('#pairShow').hidden = true; });
+$('#linkAgain').addEventListener('click', () => { $('#linkNew').hidden = false; $('#linkedOk').hidden = true; });
+$('#setBack').addEventListener('click', () => {
+  if (S.cfg.token) { pairRun++; $('#pairShow').hidden = true; }   // already connected: drop a waiting number
+  $('#settings').hidden = true;
+});
 $('#pairApproveBtn').addEventListener('click', async () => {
   const code = $('#pairInput').value.replace(/\D/g, ''), m = $('#pairApproveMsg');
   if (code.length !== 6) { m.textContent = 'Type the 6 digits shown on the new device.'; return; }
@@ -1796,6 +1850,7 @@ $('#purgeBtn').addEventListener('click', async () => {
     autoSend();
     allBoxes().filter(b => b.sheetRow && !b.photosLinked && b.photos.length && !b.linkError).forEach(b => queueLinks(b.id));   // photos cut off by closing the app
     warmCache();
+    loadOthers();
   }
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) $('#camBtn').disabled = true;
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
