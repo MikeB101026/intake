@@ -106,13 +106,6 @@ button{cursor:pointer}
 .lines{display:flex;flex-direction:column;gap:6px}
 .line{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;font-size:14px;border-top:1px dashed var(--line2);padding-top:6px}
 .line .thumb{width:44px;height:44px}
-.others{display:flex;flex-direction:column;gap:8px;margin-top:14px}
-.others > b{font:700 16px/1.2 var(--f-display);text-transform:uppercase}
-.other{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
-.other summary{cursor:pointer;display:flex;flex-direction:column;gap:2px}
-.other summary span{font-size:14px;color:var(--muted,inherit);overflow-wrap:anywhere}
-.other-body{margin-top:8px;display:flex;flex-direction:column;gap:6px;font-size:14px;overflow-wrap:anywhere}
-.other-body .ct{white-space:pre-line}
 .line-tools{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
 .line-tools .btn{min-width:40px}
 .reasons{background:var(--flag-bg);color:var(--flag-ink);border-radius:8px;padding:8px 10px;font-size:14px}
@@ -214,7 +207,6 @@ button{cursor:pointer}
     <div class="stats" id="dayStats"></div>
   </div>
   <div class="boxes" id="boxes"></div>
-  <div class="others" id="others" hidden></div>
   <div class="empty" id="emptyList">No boxes yet. Tap <b>PHONE CAMERA</b> and shoot the box's shipping label and what's inside it, one photo per tap (<b>+ NEXT PHOTO</b> for each one), then <b>Finish this box</b>.</div>
 </div>
 
@@ -1165,7 +1157,7 @@ function watchHits(b) {
 function reasons(b) {
   const r = [], row = b.row;
   const ph = b.photos.map(id => S.photos.get(id)).filter(Boolean);
-  if (!ph.some(p => p.kind === 'label')) r.push('No label photo — add one or type the row.');
+  if (!b.imported && !ph.some(p => p.kind === 'label')) r.push('No label photo — add one or type the row.');
   if (!row.tracking) r.push('No tracking number.');
   else if (/NOT IN FRAME|\?/.test(row.tracking)) r.push('Tracking not fully readable — reshoot or type it.');
   if (b.read && b.read.verify && !b.read.verify.match && b.read.verify.by !== 'barcode' && !(b.edited || {}).tracking) r.push(`Tracking read two ways: ${b.read.verify.first} / ${b.read.verify.second || '—'}. Check the label.`);
@@ -1370,42 +1362,69 @@ async function printLabel(b, auto, n, numbered) {
     notice(/Unknown request/.test(e.message) ? 'The backend needs the printing update (v5) first.' : `Label didn’t go to the printer: ${e.message}`, true);
   } finally { S.printing.delete(b.id); render(); }
 }
-/* ================= the whole day, from any device =================
-   The sheet has every box from every device, so each device also lists the day's rows it didn't send
-   itself (read-only; photos of those stay on the device that shot them and in the Drive links). */
-S.others = new Map();
-let othersBusy = false, othersOff = false;
-async function loadOthers() {
-  if (othersOff || othersBusy || document.hidden || !S.cfg.url || !S.cfg.token) return;
-  othersBusy = true;
+/* ================= same boxes on every device =================
+   The sheet has every box from every device. Each device turns the day's rows it doesn't have into real
+   boxes (same card, same edits, same Update sheet row), and takes over edits made elsewhere unless it has
+   unsent changes of its own. Their photos load from Drive when the card is opened. */
+let syncBusy = false, picsOff = false;
+const goneRows = () => { try { return JSON.parse(ls.get('goneRows') || '[]'); } catch (e) { return []; } };
+function rowFromCells(c) {                // sheet cells → the box's row, in the app's own format
+  const lines = String(c[6] || '').split(/\s*\/\/\/\s*|\n+/).map(s => s.trim()).filter(Boolean);
+  return { customer: String(c[0] || '').trim(), tracking: String(c[1] || '').trim(), pieces: parseInt(c[2], 10) || 1, weight: String(c[3] ?? '').trim(),
+    shipper: String(c[4] || '').trim(), invoice: /INVOICE INCLUDED/i.test(c[5] || ''), contents: lines.join(' ///\n') };
+}
+const proofFrom = row => row.contents ? row.contents.split(' ///\n').map(line => ({ line, photos: [] })) : [];
+async function syncDay() {
+  if (syncBusy || S.busy || document.hidden || !S.cfg.url || !S.cfg.token) return;
+  syncBusy = true;
   const day = S.day;
-  try { const j = await api('dayRows', { day }); S.others.set(day, j.rows || []); renderOthers(); }
-  catch (e) { if (/Unknown request/.test(e.message)) othersOff = true; }     // older backend: just the device's own boxes
-  finally { othersBusy = false; }
+  try {
+    const { rows = [] } = await api('dayRows', { day });
+    if (S.busy || S.sending.size) return;                 // a send is on its way: the next round sees its row with its box
+    const gone = new Set(goneRows());
+    for (const r of rows.slice().sort((a, c) => a.row - c.row)) {
+      const row = rowFromCells(r.cells), sc = cells({ row, day });
+      const mine = allBoxes().find(b => +b.sheetRow === +r.row);
+      if (mine) {
+        const norm = v => caps(v).replace(/\s+/g, ' ');
+        const changed = !mine.sentCells || sc.slice(0, 7).some((v, i) => norm(v) !== norm(mine.sentCells[i]));
+        if (changed && !isDirty(mine) && !S.active.has(mine.id)) await patchBox(mine.id, x => { x.row = row; x.sentCells = sc; x.proof = proofFrom(row); });
+        if (mine.imported && JSON.stringify(mine.pics || []) !== JSON.stringify(r.pics || [])) await patchBox(mine.id, x => { x.pics = r.pics || []; });
+        continue;
+      }
+      if (gone.has(String(r.row))) continue;
+      const t = alnum(row.tracking);
+      const own = t.length >= 8 && allBoxes().find(b => !b.sheetRow && b.day === day && b.sendTry && alnum(b.row.tracking) === t);
+      if (own) { await adoptRows([{ b: own, row: r.row }]); continue; }   // its send went through but the reply got lost
+      const seq = 1 + Math.max(0, ...allBoxes().filter(b => b.day === day).map(b => b.seq || 0));
+      await saveBox({ id: uid(), day, seq, createdAt: Date.now(), photos: [], note: '', status: 'sent', row, proof: proofFrom(row), flags: [], badges: [], read: null, readError: '',
+        edited: {}, ok: false, sheetRow: +r.row, sentCells: sc, sentAt: Date.now(), photosLinked: true, trk4s: [], imported: true, pics: r.pics || [] });
+    }
+    for (const id of S.expanded) { const b = S.boxes.get(id); if (b) loadPics(b); }
+  } catch (e) { /* no connection or an older backend: the device's own boxes still work */ }
+  finally { syncBusy = false; }
 }
-function otherRows() {
-  const mine = new Set(allBoxes().filter(b => b.sheetRow).map(b => +b.sheetRow));
-  return (S.others.get(S.day) || []).filter(r => !mine.has(+r.row)).sort((a, c) => c.row - a.row);
+/* Photos of a box that was shot on another device, from the Drive files linked in its sheet row. */
+const picsLoading = new Set();
+async function loadPics(b) {
+  if (!b.imported || picsOff || picsLoading.has(b.id)) return;
+  const want = (b.pics || []).filter(p => !(b.picsDone || []).includes(p.id));
+  if (!want.length) return;
+  picsLoading.add(b.id);
+  try {
+    for (const pic of want) {
+      const j = await api('photoGet', { id: pic.id });
+      const bytes = Uint8Array.from(atob(j.b64), c => c.charCodeAt(0));
+      const { blob, w, h } = await scaleTo(new Blob([bytes], { type: 'image/jpeg' }), 2400, 0.92);
+      const p = { id: uid(), t: Date.now(), blob, w, h, split: false, box: b.id, kind: /LABEL/i.test(pic.label) ? 'label' : 'item', src: 'drive' };
+      await putPhoto(p); S.photos.set(p.id, p);
+      await patchBox(b.id, x => { x.photos.push(p.id); x.picsDone = [...(x.picsDone || []), pic.id]; });
+    }
+  } catch (e) { if (/Unknown request/.test(e.message)) picsOff = true; }
+  finally { picsLoading.delete(b.id); }
 }
-function renderOthers() {
-  const el = $('#others'), rows = otherRows();
-  el.hidden = !rows.length;
-  if (rows.length) $('#emptyList').hidden = true;
-  const open = new Set([...el.querySelectorAll('details[open]')].map(d => d.dataset.row));
-  const html = rows.length ? `<b>Also logged today — other devices or typed in (${rows.length})</b>` + rows.map(r => {
-    const [cust, trk, , wt, ship, inv, cont] = r.cells;
-    const sub = [String(trk).length > 4 ? '…' + String(trk).replace(/\s/g, '').slice(-4) : trk, wt !== '' ? wt + ' lb' : '', ship].filter(Boolean).join(' · ');
-    return `<details class="other" data-row="${r.row}"${open.has(String(r.row)) ? ' open' : ''}><summary><b>${esc(cust || 'NO NAME')}</b><span>${esc(sub)} · row ${r.row}</span></summary><div class="other-body"><div>${esc(trk)}</div><div>${esc(ship)}</div><div>${esc(inv)}</div><div class="ct">${esc(cont || '(no contents yet)')}</div><div class="row-actions"><button type="button" class="btn small" data-rprint="${r.row}">Print label</button></div></div></details>`;
-  }).join('') : '';
-  if (el.dataset.sig !== html) { el.innerHTML = html; el.dataset.sig = html; }
-}
-$('#others').addEventListener('click', e => {
-  const btn = e.target.closest('[data-rprint]'); if (!btn) return;
-  const r = otherRows().find(x => String(x.row) === btn.dataset.rprint);
-  if (r) openPrintPrompt({ id: 'row' + r.row, row: { customer: r.cells[0] } });
-});
-setInterval(loadOthers, 45000);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) loadOthers(); });
+setInterval(syncDay, 30000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) syncDay(); });
 /* "Print label" opens this: + / − picks how many, then Print. */
 function openPrintPrompt(b) {
   if (!caps(b.row.customer) || S.printing.has(b.id)) return;
@@ -1486,7 +1505,7 @@ function cardHtml(b) {
   const last4 = row.tracking ? '…' + String(row.tracking).replace(/\s/g, '').slice(-4) : '';
   const sub = [last4, row.weight !== '' && row.weight != null ? row.weight + ' lb' : '', row.shipper].filter(Boolean).join(' · ') || `${b.photos.length} photo${b.photos.length === 1 ? '' : 's'}`;
   const st = vs === 'sent' ? `✓ Row ${b.sheetRow}` : STATUS_TEXT[vs];
-  const watch = watchHits(b), rs = reasons(b);
+  const watch = watchHits(b), rs = b.imported && vs === 'sent' ? [] : reasons(b);
   const chips = [...watch.map(w => `<span class="chip bad">${esc(w)}</span>`), ...b.flags.map(f => `<span class="chip flag">${esc(f)}</span>`), ...(ex ? b.badges.map(x => `<span class="chip">${esc(x)}</span>`) : [])].join('');
   let h = `<article class="card" data-id="${esc(b.id)}"><button type="button" class="card-top" data-act="toggle" aria-expanded="${ex}">
     <span class="no">#${b.seq}</span><span class="who"><b>${esc(row.customer || (vs === 'reading' ? 'Reading…' : 'Box ' + b.seq))}</b><span>${esc(sub)}</span></span>
@@ -1511,7 +1530,7 @@ function cardHtml(b) {
   const proof = (b.proof || []).filter(c => c.photos && c.photos.length);
   const allProof = b.proof || [];
   if (allProof.length && allProof.map(c => c.line).join(' ///\n') === row.contents) h += `<div class="lines"><div class="muted">Photo proof — each contents line next to its photos. Fix a count with + / −; two lines that are one item: “Same as above”.</div>` +
-    allProof.map((c, i) => `<div class="line"><span>${esc(c.line)}<span class="line-tools"><button type="button" class="btn small" data-act="lineqty" data-i="${i}" data-d="-1" aria-label="One fewer" ${lineQty(c.line) <= 1 ? 'disabled' : ''}>−</button><button type="button" class="btn small" data-act="lineqty" data-i="${i}" data-d="1" aria-label="One more">+</button>${i ? `<button type="button" class="btn small" data-act="linesame" data-i="${i}">Same as above</button>` : ''}</span></span><span class="thumbs">${(c.photos || []).slice(0, 4).map(thumbHtml).join('')}</span></div>`).join('') + `</div>`;
+    allProof.map((c, i) => `<div class="line"><span>${esc(c.line)}<span class="line-tools"><button type="button" class="btn small" data-act="lineqty" data-i="${i}" data-d="-1" aria-label="One fewer" ${lineQty(c.line) <= 1 ? 'disabled' : ''}>−</button><button type="button" class="btn small" data-act="lineqty" data-i="${i}" data-d="1" aria-label="One more">+</button>${i ? `<button type="button" class="btn small" data-act="linesame" data-i="${i}">Same as above</button>` : ''}</span></span><span class="thumbs">${(c.photos || []).slice(0, 4).map(thumbHtml).join('')}</span></div>`).join('') + (items.some(p => !allProof.some(c => (c.photos || []).includes(p.id))) ? `<div class="thumbs">${items.filter(p => !allProof.some(c => (c.photos || []).includes(p.id))).map(p => thumbHtml(p.id)).join('')}</div>` : '') + `</div>`;
   else if (proof.length) h += `<div class="lines"><div class="muted">Photo proof — each contents line next to its photos</div>` +
     proof.map(c => `<div class="line"><span>${esc(c.line)}</span><span class="thumbs">${c.photos.slice(0, 4).map(thumbHtml).join('')}</span></div>`).join('') + `</div>`;
   else if (items.length) h += `<div class="thumbs">${items.map(p => thumbHtml(p.id)).join('')}</div>`;
@@ -1601,7 +1620,7 @@ function renderCurrent() {
   $('#curText').textContent = `Box #${b.seq} in progress — ${nl ? nl + ' label' : 'no label yet'}, ${ph.length - nl} other photo${ph.length - nl === 1 ? '' : 's'}`;
   $('#curThumbs').innerHTML = ph.slice(-12).map(p => thumbHtml(p.id)).join('');
 }
-function render() { $('#todayChip').textContent = capsDate(TODAY()); renderCurrent(); renderPending(); renderList(); renderOthers(); renderBar(); }
+function render() { $('#todayChip').textContent = capsDate(TODAY()); renderCurrent(); renderPending(); renderList(); renderBar(); }
 
 /* ================= events ================= */
 $('#pendSort').addEventListener('click', sortPending);
@@ -1613,7 +1632,7 @@ $('#pendClearYes').addEventListener('click', async () => {
   for (const p of pendingPhotos()) { await delPhoto(p.id); S.photos.delete(p.id); }
   render();
 });
-$('#daySel').addEventListener('change', e => { S.day = e.target.value; render(); loadOthers(); });
+$('#daySel').addEventListener('change', e => { S.day = e.target.value; render(); syncDay(); });
 $('#sendBtn').addEventListener('click', () => {
   const m = $('#sendBtn').dataset.mode;
   if (!m) return;
@@ -1632,7 +1651,7 @@ document.addEventListener('click', e => {
   const card = a.closest('[data-id]'); if (!card) return;
   const id = card.dataset.id, b = S.boxes.get(id); if (!b) return;
   switch (a.dataset.act) {
-    case 'toggle': S.expanded.has(id) ? S.expanded.delete(id) : S.expanded.add(id); render(); break;
+    case 'toggle': S.expanded.has(id) ? S.expanded.delete(id) : (S.expanded.add(id), loadPics(b)); render(); break;
     case 'inv': patchBox(id, x => { x.row.invoice = !x.row.invoice; x.edited.invoice = true; }); break;
     case 'ok': patchBox(id, x => { x.ok = true; }); break;
     case 'reread': S.held.delete(id); queueRead(id, { effort: 'high', careful: true }); break;   // "Read again" always reads at high
@@ -1660,6 +1679,7 @@ document.addEventListener('change', e => {
 });
 async function deleteBox(id) {
   const b = S.boxes.get(id); S.confirmDel = null; if (!b) return;
+  if (b.sheetRow) ls.set('goneRows', JSON.stringify([...goneRows(), String(b.sheetRow)].slice(-500)));   // its row stays in the sheet: don't bring the card back
   for (const pid of b.photos) { await delPhoto(pid); S.photos.delete(pid); }
   await delBoxDb(id); S.boxes.delete(id); trkIdx = null; S.expanded.delete(id); render();
 }
@@ -1850,7 +1870,7 @@ $('#purgeBtn').addEventListener('click', async () => {
     autoSend();
     allBoxes().filter(b => b.sheetRow && !b.photosLinked && b.photos.length && !b.linkError).forEach(b => queueLinks(b.id));   // photos cut off by closing the app
     warmCache();
-    loadOthers();
+    syncDay();
   }
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) $('#camBtn').disabled = true;
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
