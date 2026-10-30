@@ -1,6 +1,6 @@
 // Offline shell: the app opens instantly even with weak signal. Network first for the page so
 // updates arrive on the next open; cached copy when offline.
-const CACHE = 'intake-v25';
+const CACHE = 'intake-v26';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {
@@ -15,7 +15,7 @@ self.addEventListener('fetch', e => {
   const url = new URL(req.url);
   if (url.origin !== location.origin) return;               // fonts etc. go straight to the network
   e.respondWith(
-    fetch(req).then(res => {
+    fetch(req.mode === 'navigate' ? req.url : req, { cache: 'no-cache' }).then(res => {   // always ask GitHub: its 10-minute cache hid updates
       const copy = res.clone();
       caches.open(CACHE).then(c => c.put(req, copy));
       return res;
