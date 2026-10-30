@@ -1,5 +1,8 @@
 /**
- * 700 Islands Intake — backend v5 (Google Apps Script web app).
+ * 700 Islands Intake — backend v6 (Google Apps Script web app).
+ *
+ * v6: faster labels. The print helper holds one request open (printWait) that answers the moment a
+ * label is waiting, instead of asking every 5 seconds and then fetching it in a second request.
  *
  * v5: label printing. "Print label" in the app queues a job (printAdd); the print helper on the laptop
  * asks for waiting jobs (printPeek, a count only, then printTake) and confirms each one (printDone).
@@ -44,7 +47,7 @@ const DEFAULTS = {
 const PROPS = PropertiesService.getScriptProperties();
 const prop = k => PROPS.getProperty(k) || DEFAULTS[k] || '';
 const MON = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-const VERSION = 5;
+const VERSION = 6;
 
 function doGet() { return out({ ok: true, app: '700 Islands Intake backend', v: VERSION }); }
 
@@ -74,6 +77,7 @@ function doPost(e) {
       case 'photos': return out(savePhotos_(req));
       case 'printAdd': return out(printAdd_(req));
       case 'printTake': return out(printTake_());
+      case 'printWait': return out(printWait_(req));
       case 'printDone': return out(printDone_(req));
     }
     return out({ error: 'Unknown request.' });
@@ -203,8 +207,21 @@ function printTake_() {
     const jobs = q.filter(j => !j.taken || now - j.taken > 120000);
     jobs.forEach(j => { j.taken = now; });
     c.put('printQ', JSON.stringify(q), PRINT_TTL);
-    return { jobs: jobs.map(j => ({ id: j.id, name: j.name, piece: j.piece, copies: j.copies })) };
+    c.put('printSeen', String(now), PRINT_TTL);
+    return { jobs: jobs.map(j => ({ id: j.id, name: j.name, piece: j.piece, copies: j.copies, at: j.at })) };
   });
+}
+/** Label printer, v6: one request that waits up to ~20 s and answers the moment a label is waiting
+ *  (instead of asking every few seconds), so a label starts printing right after "Print" is tapped. */
+function printWait_(req) {
+  const c = cache_(), until = Date.now() + Math.min(25, Math.max(1, +req.wait || 20)) * 1000;
+  c.put('printSeen', String(Date.now()), PRINT_TTL);
+  while (Date.now() < until) {
+    const now = Date.now();
+    if (printQ_(c).some(j => !j.taken || now - j.taken > 120000)) return printTake_();
+    Utilities.sleep(400);
+  }
+  return { jobs: [] };
 }
 function printDone_(req) {
   const ids = (Array.isArray(req.ids) ? req.ids : []).map(String);
