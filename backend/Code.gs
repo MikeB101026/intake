@@ -1,5 +1,7 @@
 /**
- * 700 Islands Intake — backend v6 (Google Apps Script web app).
+ * 700 Islands Intake — backend v7 (Google Apps Script web app).
+ *
+ * v7: dayRows — every device can list all of a day's rows from the sheet, whichever device logged them.
  *
  * v6: faster labels. The print helper holds one request open (printWait) that answers the moment a
  * label is waiting, instead of asking every 5 seconds and then fetching it in a second request.
@@ -47,7 +49,7 @@ const DEFAULTS = {
 const PROPS = PropertiesService.getScriptProperties();
 const prop = k => PROPS.getProperty(k) || DEFAULTS[k] || '';
 const MON = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-const VERSION = 6;
+const VERSION = 7;
 
 function doGet() { return out({ ok: true, app: '700 Islands Intake backend', v: VERSION }); }
 
@@ -75,6 +77,7 @@ function doPost(e) {
       case 'append': return out(appendRows_(req.rows || [], !!req.checkDupes));
       case 'update': return out(updateRow_(req));
       case 'photos': return out(savePhotos_(req));
+      case 'dayRows': return out(dayRows_(req));
       case 'printAdd': return out(printAdd_(req));
       case 'printTake': return out(printTake_());
       case 'printWait': return out(printWait_(req));
@@ -358,6 +361,20 @@ function lastSep_(vals, from) {
 function guardEmpty_(sh, row, n) {
   const v = sh.getRange(row, 1, n, 7).getDisplayValues();
   v.forEach((r, i) => { if (r.some(c => String(c).trim() !== '')) throw new Error('Sheet row ' + (row + i) + ' isn’t empty — stopped so nothing gets overwritten.'); });
+}
+
+/** Every row logged on one day, from any device or typed by hand (read-only; looks back 500 rows). */
+function dayRows_(req) {
+  const day = String(req.day || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error('Bad day.');
+  const sh = sheet_(), end = findEnd_(sh), from = Math.max(2, end.L - 500);
+  const rows = [];
+  sh.getRange(from, 1, end.L - from + 1, 8).getDisplayValues().forEach((r, i) => {
+    if (dayOf_(r[7]) !== day) return;
+    if (!String(r[0]).trim() && dayOf_(r[1])) return;                    // the day's separator row
+    if (r.slice(0, 7).some(c => String(c).trim() !== '')) rows.push({ row: from + i, cells: r.slice(0, 8) });
+  });
+  return { rows };
 }
 
 function watchList_() {
