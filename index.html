@@ -42,6 +42,8 @@ button{cursor:pointer}
 .notice{margin-top:12px;padding:10px 12px;border-radius:8px;background:var(--info-bg);color:var(--info-ink);font-size:15px}
 .notice.bad{background:var(--bad-bg);color:var(--bad-ink)}
 .notice button{margin-left:8px;border:0;background:none;text-decoration:underline;color:inherit;padding:0}
+.link-bar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;margin-top:12px;padding:12px;border-radius:8px;background:var(--bad-bg);color:var(--bad-ink);font-size:16px;font-weight:600}
+.link-bar[hidden]{display:none}
 .start{margin-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .start .wide{grid-column:1 / -1}
 .nextphone{min-height:90px}
@@ -182,6 +184,7 @@ button{cursor:pointer}
     <button class="gear" id="gearBtn" type="button" aria-label="Settings">Settings</button>
   </header>
   <div id="notice" class="notice" hidden></div>
+  <div class="link-bar" id="linkBar" hidden><span id="linkBarMsg"></span><button class="btn primary" id="linkBarBtn" type="button">Link this device</button></div>
 
   <section class="start">
     <label class="shot lab wide" for="nativeCam"><span class="big">PHONE CAMERA</span><span class="small">your phone's own camera — best quality · one photo per tap</span></label>
@@ -493,7 +496,7 @@ async function patchBox(id, fn) { const b = S.boxes.get(id); if (!b) return; fn(
 
 /* ================= backend ================= */
 async function api(op, payload) {
-  if (!S.cfg.url || !S.cfg.token) throw new Error('Set up the backend first: Settings → Link this device.');
+  if (!S.cfg.url || !S.cfg.token) throw new Error('This device isn’t connected. Tap Link this device at the top.');
   return post(S.cfg.url, Object.assign({ op, token: S.cfg.token }, payload || {}));
 }
 async function post(url, body) {
@@ -936,6 +939,7 @@ async function readBox(id, opts) {
   const b0 = S.boxes.get(id); if (!b0) return;
   const ph = b0.photos.map(pid => S.photos.get(pid)).filter(Boolean);
   if (!ph.length) return;
+  if (!S.cfg.url || !S.cfg.token) { await patchBox(id, b => { if (!b.sheetRow) b.status = 'new'; }); return; }   // not linked: the photos wait, read when it is
   const T0 = performance.now(), ms = {};
   S.readStart.set(id, Date.now());
   const wasSent = !!b0.sheetRow;
@@ -1620,7 +1624,12 @@ function renderCurrent() {
   $('#curText').textContent = `Box #${b.seq} in progress — ${nl ? nl + ' label' : 'no label yet'}, ${ph.length - nl} other photo${ph.length - nl === 1 ? '' : 's'}`;
   $('#curThumbs').innerHTML = ph.slice(-12).map(p => thumbHtml(p.id)).join('');
 }
-function render() { $('#todayChip').textContent = capsDate(TODAY()); renderCurrent(); renderPending(); renderList(); renderBar(); }
+function renderLink() {
+  const off = !S.cfg.url || !S.cfg.token;
+  $('#linkBar').hidden = !off;
+  if (off) $('#linkBarMsg').textContent = `${deviceName()} isn’t connected. Photos are safe and read once it’s linked.`;
+}
+function render() { $('#todayChip').textContent = capsDate(TODAY()); renderLink(); renderCurrent(); renderPending(); renderList(); renderBar(); }
 
 /* ================= events ================= */
 $('#pendSort').addEventListener('click', sortPending);
@@ -1751,11 +1760,11 @@ function apShow() { $('#apN').textContent = String(S.autoPrintN); $('#apMinus').
 function apSet(n) { S.autoPrintN = Math.min(20, Math.max(1, n)); ls.set('autoPrintN', String(S.autoPrintN)); apShow(); }
 $('#apMinus').addEventListener('click', () => apSet(S.autoPrintN - 1));
 $('#apPlus').addEventListener('click', () => apSet(S.autoPrintN + 1));
-$('#setSave').addEventListener('click', () => saveCfg($('#setUrl').value.trim(), $('#setToken').value.trim(), ''));
+$('#setSave').addEventListener('click', () => saveCfg($('#setUrl').value.trim() || S.cfg.url, $('#setToken').value.trim() || S.cfg.token, ''));   // a blank box never erases the link
 async function saveCfg(url, token, first) {
   S.cfg = { url, token };
   ls.set('backendUrl', S.cfg.url); ls.set('backendToken', S.cfg.token);
-  $('#linkOther').hidden = !token;
+  $('#linkOther').hidden = !token; render();
   const st = $('#setStatus'); st.textContent = first + 'Testing…';
   try {
     const j = await api('ping');
@@ -1763,7 +1772,12 @@ async function saveCfg(url, token, first) {
     st.textContent = first + `Connected. Model: ${j.model}` + (j.fastModel ? `, sorting with ${j.fastModel}` : ' (old backend: update Code.gs for full speed)') +
       `. Sheet tab: ${j.tab}, next row about ${j.nextRow}.` + (j.hasKey ? '' : ' The Anthropic API key is NOT set in the backend yet.');
     loadWatch().catch(() => {});
+    readWaiting(); syncDay();
   } catch (e) { st.textContent = first + e.message; }
+}
+function readWaiting() {   // boxes shot while the device wasn't linked read by themselves now, in box order
+  const wait = b => !b.sheetRow && b.photos.length && b.id !== S.current && (b.status === 'new' || (b.status === 'error' && /Set up the backend|isn’t connected/.test(b.readError || '')));
+  for (const b of allBoxes().filter(wait).sort((a, c) => (a.createdAt || 0) - (c.createdAt || 0))) queueRead(b.id);
 }
 
 /* Linking a device: the new one shows a 6-digit number, an already-set-up one types it, and the new one
@@ -1805,6 +1819,7 @@ $('#pairStartBtn').addEventListener('click', async () => {
     }
   }
 });
+$('#linkBarBtn').addEventListener('click', () => { openSettings(); $('#pairStartBtn').click(); });
 $('#pairCancel').addEventListener('click', () => { pairRun++; $('#pairShow').hidden = true; });
 $('#linkAgain').addEventListener('click', () => { $('#linkNew').hidden = false; $('#linkedOk').hidden = true; });
 $('#setBack').addEventListener('click', () => {
@@ -1862,8 +1877,7 @@ $('#purgeBtn').addEventListener('click', async () => {
   } catch (e) { notice('This phone’s storage couldn’t be opened. Photos won’t be kept.', true); }
   try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch (e) {}
   render();
-  if (!S.cfg.url || !S.cfg.token) { notice('First time: open Settings → Link this device, then type the number it shows into the phone that’s already set up.', false); }
-  else {
+  if (S.cfg.url && S.cfg.token) {
     loadWatch().catch(() => {});
     // Reads cut off when the app was closed pick up again by themselves, in box order.
     for (const b of (S.resume || []).filter(x => !x.sheetRow && x.photos.length).sort((a, c) => (a.createdAt || 0) - (c.createdAt || 0))) queueRead(b.id);
