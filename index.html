@@ -314,7 +314,7 @@ const RULES = `LABEL RULES (one row per box)
 - tracking: one string, no spaces. UPS 1Z = 18 characters. FedEx = 12 digits (drop a 96/9622 prefix of the long barcode string). USPS = the full 22-digit tracking line. Amazon TBA, GOFO GFUS, Yanwen YWE, Target TLMD, OnTrac, Veho, Better Trucks: exactly as printed. An Amazon order shipped by UPS/FedEx/USPS -> the carrier number, not a TBA. Freight with a BILL OF LADING (R+L, SAIA, ESTES, XPO, OLD DOMINION, T-FORCE, ABF, FEDEX FREIGHT, SOUTHEASTERN…) -> "DELIVERED BY <CARRIER> BOL: <NUMBER>", e.g. "DELIVERED BY R+L CARRIERS BOL: I995331177" — <NUMBER> is the carrier's PRO / tracking number on the bill of lading (usually printed under its barcode), exactly as printed; only if there is no PRO, the BOL number. Vendor truck or courier with no paperwork number -> "DELIVERED BY <VENDOR>". Tracking cut off or covered -> "NOT IN FRAME — RESHOOT" and a flag. Never guess a digit: give your best reading and add the flag "VERIFY DIGITS — <which part>".
 - weight_printed / weight_unit: the package weight exactly as printed (number only) and its unit ("lb" or "kg"). FedEx: actual weight (ACTWGT), not dim weight. No weight printed -> "" and the flag "NO WEIGHT ON LABEL — WEIGH IT". A handwritten weight counts but flag it.
 - shipper: "NAME, STREET, CITY, ST ZIP" in CAPS from the ship-from block. Anything shipped by Amazon (TBA labels, Amazon orders via USPS/UPS, Amazon fulfillment-center senders) -> just "AMAZON". Shipper block cut off -> "NOT SHOWN — SHIPPER BLOCK CUT OFF".
-- invoice: true only when a commercial invoice or a PRICED packing slip/receipt is in the photos. An "INV#" printed on the label is not an invoice; a slip without prices is not an invoice.
+- invoice: true only when a commercial invoice or a PRICED packing slip/receipt is in the photos, including label paperwork that also shows item prices. An "INV#" printed on the label is not an invoice; a slip without prices is not an invoice.
 - 4692 NW 133RD ST and 4660 NW 133RD ST (Opa Locka FL 33054) are both our addresses — never a problem.
 - Every box is its own entity: read everything fresh from these photos only.
 
@@ -324,8 +324,8 @@ BILL OF LADING / FREIGHT (pallets, crates, truck deliveries)
 - customer: the CONSIGNEE / SHIP TO name — not the shipper, not the bill-to or third party. Same name rules as above.
 - shipper: the SHIPPER / SHIP FROM block -> "NAME, STREET, CITY, ST ZIP".
 - weight: the weight on the BOL. If the BOL lists more than one piece or handling unit, add the flag "BOL SAYS <N> PIECES — CHECK ALL ARRIVED".
-- invoice: a bill of lading is never an invoice.
-- contents: described from the operator's other photos — packing slips and photos of the items — with the normal CONTENTS RULES, never from the BOL when those photos exist. Only when there are no such photos, the BOL's description lines may prefill contents (CAPS, one line each, qty = that line's piece count) with the flag "CONTENTS FROM BOL — CHECK". Never NMFC numbers, freight class or handling codes.
+- invoice: a plain bill of lading is never an invoice.
+- contents: described from the operator's other photos — packing slips and photos of the items — with the normal CONTENTS RULES, never from the BOL's generic freight description when those photos exist. Only when there are no such photos, the BOL's description lines may prefill contents (CAPS, one line each, qty = that line's piece count) with the flag "CONTENTS FROM BOL — CHECK". Never NMFC numbers, freight class or handling codes. A BOL that lists the actual products and quantities is also a packing slip: see LABEL PAPERWORK in the contents rules.
 - Flags: "FREIGHT — PALLET" (or CRATE), hazmat when the BOL marks HM, "HEAVY — TEAM LIFT" at 50 lb and over.
 
 CONTENTS RULES (what was inside)
@@ -333,6 +333,7 @@ CONTENTS RULES (what was inside)
 - Packs: items wrapped together in plastic, or sold as one case -> "BRAND ITEM N PACK", and qty = number of packs.
 - Counting: count physical units, not photos. The operator often documents ONE item from several sides: other angles, close-ups, the back of the box, its sticker or barcode, the outside of its box plus the same product inside that box, are all the SAME unit = qty 1, even when each photo shows different words. Boxes often hold many items: different products, and different sizes, colors or flavors of a product, ALWAYS get their own lines, and no product in any photo may be dropped. Identical units count when the evidence shows it: several visible together in one photo, or photos that clearly show separate units. If two photos could be one unit or two, use qty 1 and add the flag "COUNT UNSURE — <ITEM>: SAME ITEM OR MORE?" so the operator decides.
 - Packing slip or invoice in the photos: its lines and quantities ARE the contents. The slip itself is not an item. A photo of an item proves its slip line and never adds to the quantity (slip says 3, one photo of it = qty 3). An item photographed but not on the slip gets its own line and the flag "NOT ON SLIP — <ITEM>".
+- LABEL PAPERWORK that is also the packing slip or invoice (a shipping label or bill of lading on the same sheet as the order's item lines, or a shipping document that lists the actual products and quantities): those lines ARE the contents, exactly like a packing slip, with the same rules, and need no flag. Only real product lines count: not order or reference numbers, not freight class or NMFC, not generic words such as "MERCHANDISE", "GIFT", "FREIGHT ALL KINDS" or "1 PALLET". A separate packing slip or invoice photo wins over the label paperwork.
 - Order: the packing slip's order when there is one, otherwise photo order.
 - Product names printed on the outside carton may prefill contents only when there are no inside photos (add the flag "CONTENTS FROM CARTON PRINT").
 
@@ -347,8 +348,8 @@ FLAGS (short CAPS phrases for the operator)
 - Contents doubts: "COUNT UNSURE — <ITEM>".
 BADGES: short CAPS chips — carrier and service, which address (4692 or 4660), REF / PO numbers, "1 OF 2", dimensions.`;
 
-const KIND_RULE = `- "label": the box's SHIPPING LABEL — a carrier or shipping label with an address and a tracking number or barcode (UPS, FedEx, USPS, Amazon, DHL, OnTrac, freight / delivery labels), or a BILL OF LADING, freight delivery receipt or carrier PRO sticker. A photo of a whole box or pallet where its shipping label is clearly readable also counts.
-- "inside": anything else — an item, a product box, a packing slip, an invoice or receipt, carton print, a product or FNSKU sticker, a handwritten note.`;
+const KIND_RULE = `- "label": the box's SHIPPING LABEL — a carrier or shipping label with an address and a tracking number or barcode (UPS, FedEx, USPS, Amazon, DHL, OnTrac, freight / delivery labels), or a BILL OF LADING, freight delivery receipt or carrier PRO sticker. A photo of a whole box or pallet where its shipping label is clearly readable also counts, and so does a shipping label or bill of lading on the same sheet as a packing slip or invoice.
+- "inside": anything else — an item, a product box, a packing slip or invoice with no shipping label on it, a receipt, carton print, a product or FNSKU sticker, a handwritten note.`;
 const CLASSIFY = n => `These ${n} photos are all of ONE package at a package warehouse, in any order: its shipping label and what was inside it.
 For each image decide:
 ${KIND_RULE}
@@ -366,7 +367,7 @@ const SYS = `You read photos of packages received at the 700 Islands warehouse (
 
 function mainPrompt(nL, nI, note, today) {
   const p = [`Read these ${nL + nI} photos of ONE package. Today is ${today}.`];
-  p.push(nL ? `Images 1–${nL} show the OUTSIDE of the box: shipping label(s) or bill of lading, and carton print.` : 'There is no label photo for this box: leave the label fields empty.');
+  p.push(nL ? `Images 1–${nL} show the OUTSIDE of the box: shipping label(s) or bill of lading, and carton print. That paperwork may also be the packing slip or invoice.` : 'There is no label photo for this box: leave the label fields empty.');
   p.push(nI ? `Images ${nL + 1}–${nL + nI} show what was INSIDE the box: items, packing slips, invoices.` : 'There are no inside photos.');
   if (note) p.push(`The operator's note (trust it over the photos when they conflict): "${note}"`);
   p.push(`Reply with ONLY one JSON object, exactly these keys:
@@ -381,16 +382,17 @@ const itemsPrompt = (n, note) => `These ${n} photos show more of what was INSIDE
 /* ---- Read-ahead prompts: the label and each contents photo are read WHILE the operator keeps shooting. ---- */
 const LABEL_PROMPT = (n, today) => `Read ${n === 1 ? 'this photo' : `these ${n} photos`} of the OUTSIDE of ONE package (shipping label and carton print). Today is ${today}.
 Reply with ONLY one JSON object, exactly these keys:
-{"customer":"","tracking":"","weight_printed":"","weight_unit":"lb","shipper":"","invoice":false,"label_photo":1,"label_box":[0,0,1,1],"carton_items":[{"item":"","qty":1}],"flags":[],"badges":[]}
+{"customer":"","tracking":"","weight_printed":"","weight_unit":"lb","shipper":"","invoice":false,"label_photo":1,"label_box":[0,0,1,1],"paperwork_items":[{"item":"","qty":1}],"carton_items":[{"item":"","qty":1}],"flags":[],"badges":[]}
 - label_photo / label_box: the image with the clearest view of the main shipping label and that label's bounding box as fractions [left, top, right, bottom].
+- paperwork_items: when this paperwork is also the packing slip or invoice (LABEL PAPERWORK in the rules), its product lines and quantities, in order. [] for an ordinary label.
 - carton_items: products named in the carton print, or a bill of lading's description lines, if any (used only when the box has no inside photos). [] when none.`;
 const ITEM_PROMPT = `This ONE photo shows something that was INSIDE a package: an item, a product box, a packing slip or an invoice.
 Reply with ONLY one JSON object: {"items":[{"item":"","qty":1}],"slip":false,"invoice":false,"flags":[]}
 - items: what this photo shows, "BRAND ITEM" in CAPS per the rules (no SKU codes); qty = units or packs visible in THIS photo.
 - If it is a packing slip or invoice: list its lines with their quantities and set slip true; invoice true only when it shows prices.`;
-const MERGE_PROMPT = (photosJson, note) => `The images are the INSIDE photos of ONE package, in the order they were taken (image 1 = photo n 1). Each photo was read on its own, so one item shot from two sides may have two different readings:
+const MERGE_PROMPT = (photosJson, note, paper) => `The images are the INSIDE photos of ONE package, in the order they were taken (image 1 = photo n 1). Each photo was read on its own, so one item shot from two sides may have two different readings:
 ${photosJson}
-${note ? `The operator's note (trust it over the photos): "${note}"\n` : ''}LOOK AT THE IMAGES and combine the readings into the box's CONTENTS, following the counting rules: count physical units, not photos. Photos that show the same unit from another angle, up close, from the back, or the outside of its box plus the product inside are ONE line, qty 1, with the clearest name, even when their readings differ. Different products, sizes, colors or flavors ALWAYS stay separate lines and no product may be dropped. Count identical units when the evidence shows it (several together in one photo, or photos clearly showing separate units); if you can't tell, qty 1 plus the flag "COUNT UNSURE — <ITEM>: SAME ITEM OR MORE?". Packs count as packs. If a photo has slip true, the slip's lines and quantities are the contents, in slip order: item photos attach to their slip line (list them in its photos) and never add to its quantity, and an item not on the slip gets its own line with the flag "NOT ON SLIP — <ITEM>". Without a slip, keep photo order.
+${paper ? `The box's label paperwork is also its packing slip and lists these lines (not in the images): ${paper}\nThey count as a slip with slip true, unless a photo above has slip true: that separate slip wins.\n` : ''}${note ? `The operator's note (trust it over the photos): "${note}"\n` : ''}LOOK AT THE IMAGES and combine the readings into the box's CONTENTS, following the counting rules: count physical units, not photos. Photos that show the same unit from another angle, up close, from the back, or the outside of its box plus the product inside are ONE line, qty 1, with the clearest name, even when their readings differ. Different products, sizes, colors or flavors ALWAYS stay separate lines and no product may be dropped. Count identical units when the evidence shows it (several together in one photo, or photos clearly showing separate units); if you can't tell, qty 1 plus the flag "COUNT UNSURE — <ITEM>: SAME ITEM OR MORE?". Packs count as packs. If a photo has slip true, the slip's lines and quantities are the contents, in slip order: item photos attach to their slip line (list them in its photos) and never add to its quantity, and an item not on the slip gets its own line with the flag "NOT ON SLIP — <ITEM>". Without a slip, keep photo order.
 Reply with ONLY one JSON object: {"contents":[{"item":"","qty":1,"photos":[1]}],"flags":[]} — photos = the photo numbers each line came from.`;
 const VERIFY_PROMPT = `This is a shipping label or a bill of lading (usually a close-up crop of it). Read it independently and carefully.
 Return ONLY JSON: {"tracking":"","weight_printed":"","weight_unit":"lb","sure":true}
@@ -1047,7 +1049,7 @@ async function readOnce(b0, labels, items, effort, careful) {
   const contents = [];
   for (const c of (res.contents || [])) {
     if (!c || !c.item) continue;
-    const ids = (Array.isArray(c.photos) ? c.photos : []).map(n => items[(parseInt(n, 10) || 0) - 1 - lb.length]).filter(Boolean).map(p => p.id);
+    const ids = (Array.isArray(c.photos) ? c.photos : []).map(n => [...lb, ...items][(parseInt(n, 10) || 0) - 1]).filter(Boolean).map(p => p.id);   // a line can come from label paperwork too
     contents.push({ line: contentsLine(c), photos: ids });
   }
   const flags = Array.isArray(res.flags) ? res.flags.map(caps).filter(Boolean) : [];
@@ -1114,13 +1116,20 @@ async function readAhead(b0, labels, items) {
   let invoice = !!res.invoice, contents = [];
   for (const r of per) { for (const f of (r && r.flags) || []) if (caps(f)) flags.push(caps(f)); if (r && r.invoice) invoice = true; }
   const clean = r => ((r && r.items) || []).filter(x => x && x.item);
-  if (items.length === 1 && !b0.note) {
+  const paper = (Array.isArray(res.paperwork_items) ? res.paperwork_items : []).filter(c => c && c.item);
+  const labelProof = paper.length ? [(labels[(parseInt(res.label_photo, 10) || 1) - 1] || labels[0]).id] : [];
+  if (items.length === 1 && !b0.note && !paper.length) {
     contents = clean(per[0]).map(c => ({ line: contentsLine(c), photos: [items[0].id] }));
   } else if (items.length) {
     const photosJson = JSON.stringify(per.map((r, i) => ({ n: i + 1, slip: !!(r && r.slip), items: clean(r).map(x => ({ item: caps(x.item), qty: parseInt(x.qty, 10) || 1 })) })));
-    const m = await claude({ system: SYS, prompt: MERGE_PROMPT(photosJson, b0.note), effort: 'low', fast: true, images: items.slice(0, 20).map(p => ({ blob: p.blob, max: SIZE.sort })) });
-    contents = ((m && m.contents) || []).filter(c => c && c.item).map(c => ({ line: contentsLine(c), photos: (Array.isArray(c.photos) ? c.photos : []).map(n => items[(parseInt(n, 10) || 0) - 1]).filter(Boolean).map(p => p.id) }));
+    const m = await claude({ system: SYS, prompt: MERGE_PROMPT(photosJson, b0.note, paper.length ? JSON.stringify(paper) : ''), effort: 'low', fast: true, images: items.slice(0, 20).map(p => ({ blob: p.blob, max: SIZE.sort })) });
+    contents = ((m && m.contents) || []).filter(c => c && c.item).map(c => {
+      const ids = (Array.isArray(c.photos) ? c.photos : []).map(n => items[(parseInt(n, 10) || 0) - 1]).filter(Boolean).map(p => p.id);
+      return { line: contentsLine(c), photos: ids.length ? ids : labelProof };
+    });
     for (const f of (m && m.flags) || []) if (caps(f)) flags.push(caps(f));
+  } else if (paper.length) {
+    contents = paper.map(c => ({ line: contentsLine(c), photos: labelProof }));
   } else if (Array.isArray(res.carton_items) && res.carton_items.some(c => c && c.item)) {
     contents = res.carton_items.filter(c => c && c.item).map(c => ({ line: contentsLine(c), photos: [] }));
     flags.push('CONTENTS FROM CARTON PRINT');
