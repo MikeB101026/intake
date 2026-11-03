@@ -994,7 +994,8 @@ async function readBox(id, opts) {
     const { res, verify, contents, flags } = r;
     await patchBox(id, b => {
       const ed = b.edited || {};
-      const set = (k, val) => { if (!ed[k]) b.row[k] = val; };
+      const keep = (k, val) => b.sheetRow && String(val ?? '') === '' && String(b.row[k] ?? '') !== '';   // a box in the sheet: a blank read never empties a filled field
+      const set = (k, val) => { if (!ed[k] && !keep(k, val)) b.row[k] = val; };
       if (labels.length) {
         set('customer', caps(res.customer) || 'NO NAME ON LABEL');
         let t = normTrack(res.tracking);
@@ -1009,8 +1010,7 @@ async function readBox(id, opts) {
         set('shipper', normShipper(res.shipper));
         set('invoice', !!res.invoice);
       } else if (res.invoice && !ed.invoice) b.row.invoice = true;
-      if (!ed.contents) b.row.contents = contents.map(c => c.line).join(' ///\n');
-      b.proof = contents;
+      if (!ed.contents && !(contents.length === 0 && keep('contents', ''))) { b.row.contents = contents.map(c => c.line).join(' ///\n'); b.proof = contents; }
       const wp = String(res.weight_printed || ''), extra = [];
       if (/kg/i.test(res.weight_unit || '') && wp) extra.push(`${wp} KG = ${b.row.weight} LB`);
       else if (wp && wp !== b.row.weight && /\./.test(wp)) extra.push(`LABEL ${wp} LB — ROUNDED TO ${b.row.weight}`);
@@ -1470,10 +1470,29 @@ async function updateRows() {
   const list = dirtyBoxes(); if (!list.length || S.busy) return;
   S.busy = true; render();
   try {
+    const sheetNow = new Map();                        // day -> that day's rows as the sheet has them right now
     for (const b of list) {
       barMsg(`Updating sheet row ${b.sheetRow}…`);
-      await api('update', { row: b.sheetRow, expectTracking: b.sentCells[1], cells: cells(b).slice(0, 7) });
-      await patchBox(b.id, x => { x.sentCells = cells(x); });
+      // Only the cells changed on this device are written. Cells typed in the sheet meanwhile stay, and a blank
+      // here never empties a filled cell there.
+      const mine = cells(b).slice(0, 7);
+      let out = mine;
+      try {
+        if (!sheetNow.has(b.day)) sheetNow.set(b.day, (await api('dayRows', { day: b.day })).rows || []);
+        const cur = sheetNow.get(b.day).find(r => +r.row === +b.sheetRow);
+        if (cur) out = mine.map((v, i) => {
+          const now = String(cur.cells[i] ?? '');
+          if (caps(v) === caps(b.sentCells[i] ?? '')) return now;
+          if (String(v ?? '').trim() === '' && now.trim() !== '') return now;
+          return v;
+        });
+      } catch (e) { /* couldn't see the sheet: write this device's version, as before */ }
+      await api('update', { row: b.sheetRow, expectTracking: b.sentCells[1], cells: out });
+      await patchBox(b.id, x => {
+        const row = rowFromCells(out);
+        if (row.contents !== x.row.contents) x.proof = proofFrom(row);
+        x.row = row; x.sentCells = cells(x);
+      });
     }
     barMsg(`Updated ${list.length} row${list.length === 1 ? '' : 's'}`);
   } catch (e) { barMsg(''); notice(e.message, true); }
