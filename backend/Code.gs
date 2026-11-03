@@ -1,5 +1,8 @@
 /**
- * 700 Islands Intake — backend v7 (Google Apps Script web app).
+ * 700 Islands Intake — backend v8 (Google Apps Script web app).
+ *
+ * v8: same boxes on every device: dayRows also gives each row's photo files, photoGet hands one over
+ * (only from the intake photo folder), so another device can open and re-read the box.
  *
  * v7: dayRows — every device can list all of a day's rows from the sheet, whichever device logged them.
  *
@@ -49,7 +52,7 @@ const DEFAULTS = {
 const PROPS = PropertiesService.getScriptProperties();
 const prop = k => PROPS.getProperty(k) || DEFAULTS[k] || '';
 const MON = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-const VERSION = 7;
+const VERSION = 9;
 
 function doGet() { return out({ ok: true, app: '700 Islands Intake backend', v: VERSION }); }
 
@@ -78,6 +81,7 @@ function doPost(e) {
       case 'update': return out(updateRow_(req));
       case 'photos': return out(savePhotos_(req));
       case 'dayRows': return out(dayRows_(req));
+      case 'photoGet': return out(photoGet_(req));
       case 'printAdd': return out(printAdd_(req));
       case 'printTake': return out(printTake_());
       case 'printWait': return out(printWait_(req));
@@ -357,10 +361,16 @@ function lastSep_(vals, from) {
   for (let i = vals.length - 1; i >= 0; i--) { const d = dayOf_(vals[i][0]); if (d) return { row: from + i, day: d }; }
   return null;
 }
-/** Columns A–G must be empty (H often holds a pre-filled date, which is fine to overwrite). */
-function guardEmpty_(sh, row, n) {
-  const v = sh.getRange(row, 1, n, 7).getDisplayValues();
-  v.forEach((r, i) => { if (r.some(c => String(c).trim() !== '')) throw new Error('Sheet row ' + (row + i) + ' isn’t empty — stopped so nothing gets overwritten.'); });
+/** First of n rows in a row from `row` down with A–G empty (H often holds a pre-filled date, which is fine to overwrite).
+ *  Skips anything filled, such as a row typed without a tracking number; never writes over it. */
+function nextFree_(sh, row, n, stop) {
+  while (row + n - 1 <= stop) {
+    let hit = -1;
+    sh.getRange(row, 1, n, 7).getDisplayValues().forEach((r, i) => { if (r.some(c => String(c).trim() !== '')) hit = i; });
+    if (hit < 0) return row;
+    row += hit + 1;
+  }
+  throw new Error('Not enough empty rows above the watch list block (row ' + (stop + 1) + '). Insert rows in the sheet first.');
 }
 
 /** Every row logged on one day, from any device or typed by hand (read-only; looks back 500 rows). */
@@ -368,13 +378,32 @@ function dayRows_(req) {
   const day = String(req.day || '');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error('Bad day.');
   const sh = sheet_(), end = findEnd_(sh), from = Math.max(2, end.L - 500);
-  const rows = [];
-  sh.getRange(from, 1, end.L - from + 1, 8).getDisplayValues().forEach((r, i) => {
+  const to = Math.min(end.L + 50, watchStop_());                         // a few past the end: rows typed without a tracking number
+  const rows = [], links = sh.getRange(from, +prop('PHOTO_COL'), to - from + 1, 15).getFormulas();
+  sh.getRange(from, 1, to - from + 1, 8).getDisplayValues().forEach((r, i) => {
     if (dayOf_(r[7]) !== day) return;
     if (!String(r[0]).trim() && dayOf_(r[1])) return;                    // the day's separator row
-    if (r.slice(0, 7).some(c => String(c).trim() !== '')) rows.push({ row: from + i, cells: r.slice(0, 8) });
+    if (r.slice(0, 7).some(c => String(c).trim() !== '')) rows.push({ row: from + i, cells: r.slice(0, 8), pics: picsIn_(links[i]) });
   });
   return { rows };
+}
+/** The photo links a box's row holds in AV… → [{id, label}] of the Drive files. */
+function picsIn_(formulas) {
+  const pics = [];
+  formulas.forEach(f => {
+    const m = String(f).match(/\/d\/([\w-]{20,})[^"]*"\s*,\s*"([^"]*)"/);
+    if (m) pics.push({ id: m[1], label: m[2] });
+  });
+  return pics;
+}
+/** One photo of a box, by Drive file id. Only files in the intake photo folder are handed out. */
+function photoGet_(req) {
+  const file = DriveApp.getFileById(String(req.id || ''));
+  const parents = file.getParents(), folder = prop('PHOTO_FOLDER_ID');
+  let inFolder = false;
+  while (parents.hasNext()) if (parents.next().getId() === folder) inFolder = true;
+  if (!inFolder) throw new Error('Not an intake photo.');
+  return { b64: Utilities.base64Encode(file.getBlob().getBytes()) };
 }
 
 function watchList_() {
@@ -415,8 +444,7 @@ function appendRows_(rows, checkDupes) {
     for (const day of days) {
       const group = rows.filter(r => r.day === day);
       if (!sep || day > sep.day) {
-        if (L + 1 > stop) throw new Error('The log has reached the watch list block at row ' + (stop + 1) + '. Insert rows in the sheet first.');
-        guardEmpty_(sh, L + 1, 1);
+        L = nextFree_(sh, L + 1, 1, stop) - 1;
         const d = dateOf_(day);
         sh.getRange(L + 1, 1, 1, 8).setValues([['', d, '', '', '', '', '', d]]);
         sh.getRange(L + 1, 2).setNumberFormat('d mmm yyyy');
@@ -424,8 +452,7 @@ function appendRows_(rows, checkDupes) {
         L += 1; sep = { row: L, day };
       }
       const k = group.length;
-      if (L + k > stop) throw new Error('Not enough empty rows above the watch list block (row ' + (stop + 1) + '). Insert rows in the sheet first.');
-      guardEmpty_(sh, L + 1, k);
+      L = nextFree_(sh, L + 1, k, stop) - 1;
       sh.getRange(L + 1, 2, k, 1).setNumberFormat('@');
       sh.getRange(L + 1, 1, k, 8).setValues(group.map(g => {
         const c = g.cells;
