@@ -84,7 +84,7 @@ button{cursor:pointer}
 .st.ready{background:var(--ok-bg);color:var(--ok-ink)}
 .st.sent{background:var(--ink);color:var(--card)}
 .st.check,.st.dirty{background:var(--flag-bg);color:var(--flag-ink)}
-.st.error{background:var(--bad-bg);color:var(--bad-ink)}
+.st.error,.st.wrong{background:var(--bad-bg);color:var(--bad-ink)}
 .st.reading,.st.queued,.st.unread,.st.sending{background:var(--info-bg);color:var(--info-ink)}
 .btn.done{background:var(--ok-bg);color:var(--ok-ink);border-color:var(--ok-bg);opacity:1}
 .chips{display:flex;flex-wrap:wrap;gap:5px;padding:0 12px 10px}
@@ -419,6 +419,9 @@ function trackKey(t) {
   const m = t.match(/\b(?:BOL|PRO|PROBILL|BILL OF LADING)\b\s*(?:#|NO\.?|NUMBER)?\s*:?\s*([A-Z0-9][A-Z0-9-]*)\s*$/) || t.match(/\(([^()]*)\)\s*$/);
   return m ? alnum(m[1].replace(/\b(PROBILL|PRO|BOL|BILL OF LADING|REF|NO|NUMBER)\b/g, '')) : '';
 }
+/* What makes a box unique: the tracking number, or a freight row's BOL / PRO number. "DELIVERED BY <VENDOR>" or
+   "PICK UP BY 700 ISLANDS" with no number is not unique (the same vendor delivers many boxes), so it is never a repeat. */
+const trkId = t => { const k = trackKey(t); return k.length >= (isFreightTrk(caps(t)) ? 4 : 8) ? k : ''; };
 const trackMatch = (a, bb) => !!bb && !/\?/.test(bb) && !!trackKey(a) && trackKey(a) === alnum(bb);
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const ls = { get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} } };
@@ -1154,11 +1157,11 @@ function unsure(r) {
 /* Tracking number → boxes, built once and rebuilt only after a box changes. Checking every box
    against every box ever kept made each screen update slower day by day. (trkIdx is declared with S.) */
 function dupesOf(b) {
-  const t = alnum(b.row.tracking);
-  if (!t || t.length < 8) return [];
+  const t = trkId(b.row.tracking);
+  if (!t) return [];
   if (!trkIdx) {
     trkIdx = new Map();
-    for (const o of S.boxes.values()) { const k = alnum(o.row.tracking); if (k.length >= 8) { const a = trkIdx.get(k); if (a) a.push(o); else trkIdx.set(k, [o]); } }
+    for (const o of S.boxes.values()) { const k = trkId(o.row.tracking); if (k) { const a = trkIdx.get(k); if (a) a.push(o); else trkIdx.set(k, [o]); } }
   }
   return (trkIdx.get(t) || []).filter(o => o.id !== b.id);
 }
@@ -1189,6 +1192,7 @@ function isDirty(b) {
 }
 function viewStatus(b) {
   if (S.sending.has(b.id)) return 'sending';
+  if (b.wrongRow) return 'wrong';
   if (b.sheetRow) return isDirty(b) ? 'dirty' : 'sent';
   if (S.active.has(b.id)) return 'reading';
   if (S.readQ.some(j => j.id === b.id)) return 'queued';
@@ -1196,7 +1200,7 @@ function viewStatus(b) {
   if (b.status !== 'read') return 'unread';
   return reasons(b).length && !b.ok ? 'check' : 'ready';
 }
-const STATUS_TEXT = { sending: 'Sending…', unread: 'Not read', queued: 'Waiting', reading: 'Reading…', error: 'Error', check: 'Check', ready: 'Ready', sent: 'In sheet', dirty: 'Changed' };
+const STATUS_TEXT = { sending: 'Sending…', unread: 'Not read', queued: 'Waiting', reading: 'Reading…', error: 'Error', wrong: 'Not in sheet', check: 'Check', ready: 'Ready', sent: 'In sheet', dirty: 'Changed' };
 function cells(b, oneLine) {
   const r = b.row;
   const contents = oneLine ? String(r.contents || '').replace(/\s*\n\s*/g, ' ').replace(/\s*\/\/\/\s*/g, ' /// ').trim()
@@ -1220,7 +1224,7 @@ async function loadWatch() {
 
 /* ================= sending ================= */
 const sendable = () => allBoxes().filter(b => b.day === S.day && !b.sheetRow && viewStatus(b) === 'ready').sort((a, b) => a.seq - b.seq);
-const dirtyBoxes = () => allBoxes().filter(b => b.day === S.day && b.sheetRow && isDirty(b));
+const dirtyBoxes = () => allBoxes().filter(b => b.day === S.day && b.sheetRow && !b.wrongRow && isDirty(b));
 /* ONE TAP: checks for repeats, writes the rows, then saves the photos in the background.
    The boxes lock as "Sending…" the moment it's tapped, so there's nothing to tap twice. */
 async function planSend(only, auto) {
@@ -1237,8 +1241,14 @@ async function planSend(only, auto) {
       if (!r.dupes) return await finishSend(list, r.placed, r.nextRow);
       hits = r.dupes;
     } else hits = (await api('dupes', { trackings: list.map(b => b.row.tracking) })).hits;
+    hits = Object.fromEntries(Object.entries(hits || {}).filter(([t]) => trkId(t)));   // a vendor name with no number is not a repeat
     let dupes = list.filter(b => hits[b.row.tracking]).map(b => ({ b, row: hits[b.row.tracking] }));
-    const own = dupes.filter(d => isOwnLostRow(d.b, d.row));
+    // A box only takes over a row from its OWN day (an earlier day's row is a different box).
+    const dayRowSet = new Map();
+    for (const day of new Set(dupes.map(d => d.b.day))) {
+      try { dayRowSet.set(day, new Set(((await api('dayRows', { day })).rows || []).map(r => +r.row))); } catch (e) { dayRowSet.set(day, new Set()); }
+    }
+    const own = dupes.filter(d => isOwnLostRow(d.b, d.row) && dayRowSet.get(d.b.day).has(+d.row));
     if (own.length) {
       await adoptRows(own);
       dupes = dupes.filter(d => !own.includes(d));
@@ -1397,7 +1407,7 @@ async function syncDay() {
     const gone = new Set(goneRows());
     for (const r of rows.slice().sort((a, c) => a.row - c.row)) {
       const row = rowFromCells(r.cells), sc = cells({ row, day });
-      const mine = allBoxes().find(b => +b.sheetRow === +r.row);
+      const mine = allBoxes().find(b => b.day === day && +b.sheetRow === +r.row);
       if (mine) {
         const norm = v => caps(v).replace(/\s+/g, ' ');
         const changed = !mine.sentCells || sc.slice(0, 7).some((v, i) => norm(v) !== norm(mine.sentCells[i]));
@@ -1406,12 +1416,21 @@ async function syncDay() {
         continue;
       }
       if (gone.has(String(r.row))) continue;
-      const t = alnum(row.tracking);
-      const own = t.length >= 8 && allBoxes().find(b => !b.sheetRow && b.day === day && b.sendTry && alnum(b.row.tracking) === t);
+      const t = trkId(row.tracking);
+      const own = t && allBoxes().find(b => !b.sheetRow && b.day === day && b.sendTry && trkId(b.row.tracking) === t);
       if (own) { await adoptRows([{ b: own, row: r.row }]); continue; }   // its send went through but the reply got lost
       const seq = 1 + Math.max(0, ...allBoxes().filter(b => b.day === day).map(b => b.seq || 0));
       await saveBox({ id: uid(), day, seq, createdAt: Date.now(), photos: [], note: '', status: 'sent', row, proof: proofFrom(row), flags: [], badges: [], read: null, readError: '',
         edited: {}, ok: false, sheetRow: +r.row, sentCells: sc, sentAt: Date.now(), photosLinked: true, trk4s: [], imported: true, pics: r.pics || [] });
+    }
+    // A box of this day that points at a row ABOVE the day's rows took over an earlier day's box by mistake.
+    if (rows.length) {
+      const first = Math.min(...rows.map(r => +r.row)), end = Math.max(...rows.map(r => +r.row)) + 1;
+      if (end > (S.nextRowSeen || 0)) { S.nextRowSeen = end; ls.set('nextRowSeen', String(end)); }
+      for (const b of allBoxes().filter(x => x.day === day && x.sheetRow && !x.imported)) {
+        const wrong = +b.sheetRow < first;
+        if (!!b.wrongRow !== wrong) await patchBox(b.id, x => { x.wrongRow = wrong; });
+      }
     }
     for (const id of S.expanded) { const b = S.boxes.get(id); if (b) loadPics(b); }
   } catch (e) { /* no connection or an older backend: the device's own boxes still work */ }
@@ -1548,6 +1567,7 @@ function cardHtml(b) {
   const labels = ph.filter(p => p.kind === 'label'), items = ph.filter(p => p.kind !== 'label');
   h += `<div class="detail">`;
   if (b.readError) h += `<div class="err">${esc(b.readError)}</div>`;
+  if (b.wrongRow) h += `<div class="err">Row ${b.sheetRow} in the sheet is a box from an earlier day, so this box never went into the sheet. <button type="button" class="btn small primary" data-act="resend">Send as a new row</button></div>`;
   if (rs.length && ['check', 'dirty', 'sent'].includes(vs)) h += `<div class="reasons"><b>Check before sending</b><ul>${rs.map(r => `<li>${esc(r)}</li>`).join('')}</ul></div>`;
   h += `<div class="proof"><div class="thumbs">${labels.map(p => thumbHtml(p.id)).join('') || '<span class="muted">No label photo</span>'}</div>
     <div class="fields">
@@ -1694,6 +1714,10 @@ document.addEventListener('click', e => {
     case 'reread': S.held.delete(id); queueRead(id, { effort: 'high', careful: true }); break;   // "Read again" always reads at high
     case 'cam': openCamera(id); break;
     case 'send1': planSend([b]); break;
+    case 'resend':
+      patchBox(id, x => { x.sheetRow = null; x.sentCells = null; x.wrongRow = false; x.status = 'read'; x.ok = true; x.photosLinked = false; delete x.sendTry; })
+        .then(() => planSend([S.boxes.get(id)]));
+      break;
     case 'print': openPrintPrompt(b); break;
     case 'lineqty': lineStep(id, +a.dataset.i, +a.dataset.d); break;
     case 'linesame': lineSame(id, +a.dataset.i); break;
