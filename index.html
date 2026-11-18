@@ -257,6 +257,7 @@ button{cursor:pointer}
     <label class="check"><input type="checkbox" id="setAutoSend"> Send clean boxes to the sheet automatically (anything with a warning still waits for you)</label>
     <label class="check"><input type="checkbox" id="setAutoPrint"> Print the label automatically when a box goes into the sheet (the “Print label” button always works too)</label>
     <div class="pp-set"><span>Labels per box when printing automatically</span><button type="button" class="btn small pp-step-s" id="apMinus" aria-label="One label fewer">−</button><b id="apN">1</b><button type="button" class="btn small pp-step-s" id="apPlus" aria-label="One label more">+</button></div>
+    <label class="check"><input type="checkbox" id="setTotals"> Put “(N TOTAL)” after each contents line on new boxes (each box also has a “No (TOTAL)” button)</label>
     <label class="check"><input type="checkbox" id="setHigh"> Always read at high effort (slower; normally it reads at medium and switches to high by itself when anything looks unsure)</label>
     <div class="muted" id="storeInfo"></div>
     <button class="btn danger" id="purgeBtn" type="button">Delete photos of boxes already in the sheet (older than 7 days)</button>
@@ -481,7 +482,7 @@ const S = {
   readQ: [], reading: null, watch: null, plan: null, busy: false, lb: null,
   cfg: { url: ls.get('backendUrl') || '', token: ls.get('backendToken') || '' },
   sharp: ls.get('sharp2') !== '0', autoSort: ls.get('autoSort') !== '0',
-  autoSend: ls.get('autoSend') !== '0', alwaysHigh: ls.get('alwaysHigh') === '1', autoPrint: ls.get('autoPrint') === '1',
+  autoSend: ls.get('autoSend') !== '0', alwaysHigh: ls.get('alwaysHigh') === '1', autoPrint: ls.get('autoPrint') === '1', noTotals: ls.get('noTotals') === '1',
   autoPrintN: Math.min(20, Math.max(1, parseInt(ls.get('autoPrintN'), 10) || 1)), pp: null,
   nextRowSeen: +ls.get('nextRowSeen') || 0,
   bv: 0, sortP: new Map(), held: new Set(), sending: new Set(), linking: null, printing: new Set()
@@ -858,7 +859,7 @@ async function newBox() {
   const day = TODAY();
   const seq = 1 + Math.max(0, ...allBoxes().filter(b => b.day === day).map(b => b.seq || 0));
   const b = { id: uid(), day, seq, createdAt: Date.now(), photos: [], note: '', status: 'new', row: { customer: '', tracking: '', pieces: 1, weight: '', shipper: '', invoice: false, contents: '' },
-    proof: [], flags: [], badges: [], read: null, readError: '', edited: {}, ok: false, sheetRow: null, sentCells: null, trk4s: [] };
+    proof: [], flags: [], badges: [], read: null, readError: '', edited: {}, ok: false, sheetRow: null, sentCells: null, trk4s: [], noTotals: S.noTotals };
   await saveBox(b);
   return b;
 }
@@ -1013,7 +1014,7 @@ async function readBox(id, opts) {
         set('shipper', normShipper(res.shipper));
         set('invoice', !!res.invoice);
       } else if (res.invoice && !ed.invoice) b.row.invoice = true;
-      if (!ed.contents && !(contents.length === 0 && keep('contents', ''))) { b.row.contents = contents.map(c => c.line).join(' ///\n'); b.proof = contents; }
+      if (!ed.contents && !(contents.length === 0 && keep('contents', ''))) { b.row.contents = joinProof(b, contents); b.proof = contents; }
       const wp = String(res.weight_printed || ''), extra = [];
       if (/kg/i.test(res.weight_unit || '') && wp) extra.push(`${wp} KG = ${b.row.weight} LB`);
       else if (wp && wp !== b.row.weight && /\./.test(wp)) extra.push(`LABEL ${wp} LB — ROUNDED TO ${b.row.weight}`);
@@ -1543,7 +1544,18 @@ function renderPending() {
 /* One-tap count fixes on the card: + / − on a contents line, or "Same as above" when two lines are one item. */
 const lineQty = line => parseInt((String(line).match(/\((\d+) TOTAL\)$/) || [])[1], 10) || 1;
 function setProof(id, fn) {
-  patchBox(id, x => { x.proof = fn(x.proof.slice()); x.row.contents = x.proof.map(c => c.line).join(' ///\n'); x.edited.contents = true; });
+  patchBox(id, x => { x.proof = fn(x.proof.slice()); x.row.contents = joinProof(x, x.proof); x.edited.contents = true; });
+}
+/* "No (TOTAL)": the box logs each item as scanned, without the count. The counts are kept, so it can switch back. */
+const noTotal = line => String(line).replace(/\s*\(\d+\s*TOTAL\)\s*$/i, '');
+const joinProof = (b, proof) => proof.map(c => b.noTotals ? noTotal(c.line) : c.line).join(' ///\n');
+function toggleTotals(id) {
+  patchBox(id, x => {
+    const fromProof = (x.proof || []).length && joinProof(x, x.proof) === x.row.contents;
+    x.noTotals = !x.noTotals;
+    if (fromProof) x.row.contents = joinProof(x, x.proof);
+    else if (x.noTotals) x.row.contents = String(x.row.contents || '').split(/\s*\/\/\/\s*\n?\s*/).map(s => noTotal(s.trim())).filter(Boolean).join(' ///\n');
+  });
 }
 function lineStep(id, i, d) {
   setProof(id, p => { if (p[i]) p[i] = { ...p[i], line: contentsLine({ item: p[i].line, qty: Math.max(1, lineQty(p[i].line) + d) }) }; return p; });
@@ -1581,14 +1593,15 @@ function cardHtml(b) {
     </div></div>`;
   const proof = (b.proof || []).filter(c => c.photos && c.photos.length);
   const allProof = b.proof || [];
-  if (allProof.length && allProof.map(c => c.line).join(' ///\n') === row.contents) h += `<div class="lines"><div class="muted">Photo proof — each contents line next to its photos. Fix a count with + / −; two lines that are one item: “Same as above”.</div>` +
-    allProof.map((c, i) => `<div class="line"><span>${esc(c.line)}<span class="line-tools"><button type="button" class="btn small" data-act="lineqty" data-i="${i}" data-d="-1" aria-label="One fewer" ${lineQty(c.line) <= 1 ? 'disabled' : ''}>−</button><button type="button" class="btn small" data-act="lineqty" data-i="${i}" data-d="1" aria-label="One more">+</button>${i ? `<button type="button" class="btn small" data-act="linesame" data-i="${i}">Same as above</button>` : ''}</span></span><span class="thumbs">${(c.photos || []).slice(0, 4).map(thumbHtml).join('')}</span></div>`).join('') + (items.some(p => !allProof.some(c => (c.photos || []).includes(p.id))) ? `<div class="thumbs">${items.filter(p => !allProof.some(c => (c.photos || []).includes(p.id))).map(p => thumbHtml(p.id)).join('')}</div>` : '') + `</div>`;
+  if (allProof.length && joinProof(b, allProof) === row.contents) h += `<div class="lines"><div class="muted">Photo proof — each contents line next to its photos. ${b.noTotals ? '' : 'Fix a count with + / −; '}two lines that are one item: “Same as above”.</div>` +
+    allProof.map((c, i) => `<div class="line"><span>${esc(b.noTotals ? noTotal(c.line) : c.line)}<span class="line-tools">${b.noTotals ? '' : `<button type="button" class="btn small" data-act="lineqty" data-i="${i}" data-d="-1" aria-label="One fewer" ${lineQty(c.line) <= 1 ? 'disabled' : ''}>−</button><button type="button" class="btn small" data-act="lineqty" data-i="${i}" data-d="1" aria-label="One more">+</button>`}${i ? `<button type="button" class="btn small" data-act="linesame" data-i="${i}">Same as above</button>` : ''}</span></span><span class="thumbs">${(c.photos || []).slice(0, 4).map(thumbHtml).join('')}</span></div>`).join('') + (items.some(p => !allProof.some(c => (c.photos || []).includes(p.id))) ? `<div class="thumbs">${items.filter(p => !allProof.some(c => (c.photos || []).includes(p.id))).map(p => thumbHtml(p.id)).join('')}</div>` : '') + `</div>`;
   else if (proof.length) h += `<div class="lines"><div class="muted">Photo proof — each contents line next to its photos</div>` +
     proof.map(c => `<div class="line"><span>${esc(c.line)}</span><span class="thumbs">${c.photos.slice(0, 4).map(thumbHtml).join('')}</span></div>`).join('') + `</div>`;
   else if (items.length) h += `<div class="thumbs">${items.map(p => thumbHtml(p.id)).join('')}</div>`;
   h += `<div class="row-actions">
     <button type="button" class="btn small" data-act="cam">+ Camera</button>
     <button type="button" class="btn small" data-act="reread" ${ph.length ? '' : 'disabled'}>Read again</button>
+    <button type="button" class="btn small" data-act="totals">${b.noTotals ? 'Add (TOTAL)' : 'No (TOTAL)'}</button>
     <button type="button" class="btn small" data-act="print" ${row.customer && !S.printing.has(b.id) ? '' : 'disabled'}>${S.printing.has(b.id) ? 'Printing…' : 'Print label'}</button>
     ${vs === 'ready' && !S.busy ? '<button type="button" class="btn small primary" data-act="send1">Send to sheet</button>' : ''}
     ${vs === 'check' ? '<button type="button" class="btn small tape" data-act="ok">Looks good</button>' : ''}
@@ -1721,6 +1734,7 @@ document.addEventListener('click', e => {
     case 'print': openPrintPrompt(b); break;
     case 'lineqty': lineStep(id, +a.dataset.i, +a.dataset.d); break;
     case 'linesame': lineSame(id, +a.dataset.i); break;
+    case 'totals': toggleTotals(id); break;
     case 'upd': updateRows(); break;
     case 'del': S.confirmDel = id; render(); break;
     case 'del-no': S.confirmDel = null; render(); break;
@@ -1795,7 +1809,7 @@ function openSettings() {
   $('#linkOther').hidden = !S.cfg.token; $('#devList').textContent = '';
   $('#linkedOk').hidden = !S.cfg.token; $('#linkNew').hidden = !!S.cfg.token;   // connected: no "Link this device" to trip over
   $('#setSharp').checked = S.sharp; $('#setAutoSort').checked = S.autoSort;
-  $('#setAutoSend').checked = S.autoSend; $('#setHigh').checked = S.alwaysHigh; $('#setAutoPrint').checked = S.autoPrint; apShow();
+  $('#setAutoSend').checked = S.autoSend; $('#setHigh').checked = S.alwaysHigh; $('#setAutoPrint').checked = S.autoPrint; $('#setTotals').checked = !S.noTotals; apShow();
   $('#settings').hidden = false; storageInfo();
 }
 async function storageInfo() {
@@ -1808,6 +1822,7 @@ $('#setAutoSort').addEventListener('change', e => { S.autoSort = e.target.checke
 $('#setAutoSend').addEventListener('change', e => { S.autoSend = e.target.checked; ls.set('autoSend', S.autoSend ? '1' : '0'); if (S.autoSend) autoSend(); });
 $('#setHigh').addEventListener('change', e => { S.alwaysHigh = e.target.checked; ls.set('alwaysHigh', S.alwaysHigh ? '1' : '0'); });
 $('#setAutoPrint').addEventListener('change', e => { S.autoPrint = e.target.checked; ls.set('autoPrint', S.autoPrint ? '1' : '0'); });
+$('#setTotals').addEventListener('change', e => { S.noTotals = !e.target.checked; ls.set('noTotals', S.noTotals ? '1' : '0'); });
 function apShow() { $('#apN').textContent = String(S.autoPrintN); $('#apMinus').disabled = S.autoPrintN <= 1; $('#apPlus').disabled = S.autoPrintN >= 20; }
 function apSet(n) { S.autoPrintN = Math.min(20, Math.max(1, n)); ls.set('autoPrintN', String(S.autoPrintN)); apShow(); }
 $('#apMinus').addEventListener('click', () => apSet(S.autoPrintN - 1));
