@@ -1382,13 +1382,20 @@ async function printLabel(b, auto, n, numbered, from, to) {
   if (!name || S.printing.has(b.id)) return;
   S.printing.add(b.id); render();
   try {
-    let j = null, k = 0;
+    let j = null, k = 0, next = 0;
     const jobs = printJobs(b, n, numbered, from, to);
-    for (const job of jobs) {
-      if (jobs.length > 3) notice(`Sending labels to the printer… ${++k} of ${jobs.length}`);
-      j = await api('printAdd', { name, piece: job.piece, copies: job.copies });
-      if (j.error || !j.ok) throw new Error(j.error || 'The backend didn’t take the label.');
-    }
+    /* 4 at a time (one by one took ~1.5 s per label); the laptop helper puts them back in order and prints
+       the whole set as one job. */
+    const worker = async () => {
+      while (next < jobs.length) {
+        const job = jobs[next++];
+        const r = await api('printAdd', { name, piece: job.piece, copies: job.copies });
+        if (r.error || !r.ok) throw new Error(r.error || 'The backend didn’t take the label.');
+        j = r;
+        if (jobs.length > 3) notice(`Sending labels to the printer… ${++k} of ${jobs.length}`);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, jobs.length) }, worker));
     const part = numbered && n > 1 && (from > 1 || to < n);
     const what = part ? (from === to ? `Label ${from} / ${n} for ${name}` : `Labels ${from} – ${to} of ${n} for ${name}`)
       : n === 1 ? `Label for ${name}` : `${n} labels for ${name}`;
