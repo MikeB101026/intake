@@ -139,7 +139,11 @@ button{cursor:pointer}
 .pp-in > b{font:700 22px/1.1 var(--f-display);text-transform:uppercase}
 .pp-count{display:flex;align-items:center;justify-content:center;gap:22px}
 .pp-step{width:68px;height:68px;font-size:34px;line-height:1;padding:0}
-#ppN{font:700 48px/1 var(--f-mono);min-width:2.5ch;text-align:center}
+#ppN{font:700 48px/1 var(--f-mono);width:2.8ch;text-align:center;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink);padding:4px 0;-moz-appearance:textfield;appearance:textfield}
+.pp input::-webkit-inner-spin-button,.pp input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+.pp-range{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-weight:500}
+.pp-range[hidden]{display:none}
+.pp-range input{font:700 22px/1 var(--f-mono);width:3ch;text-align:center;border:1px solid var(--line);border-radius:8px;padding:6px 2px;background:var(--bg);color:var(--ink);-moz-appearance:textfield;appearance:textfield}
 .pp .check{display:flex;flex-direction:row;align-items:center;gap:8px;font-weight:500}
 .pp .row-actions .btn{flex:1}
 .link-box{border:1px solid var(--line);border-radius:10px;background:var(--card);padding:12px;display:flex;flex-direction:column;gap:8px;align-items:flex-start}
@@ -267,8 +271,9 @@ button{cursor:pointer}
   <div class="pp-in">
     <b id="ppTitle">Print labels</b>
     <div class="muted" id="ppName"></div>
-    <div class="pp-count"><button type="button" class="btn pp-step" id="ppMinus" aria-label="One label fewer">−</button><output id="ppN" aria-live="polite">1</output><button type="button" class="btn pp-step" id="ppPlus" aria-label="One label more">+</button></div>
+    <div class="pp-count"><button type="button" class="btn pp-step" id="ppMinus" aria-label="One label fewer">−</button><input id="ppN" type="number" inputmode="numeric" min="1" max="99" value="1" aria-label="How many labels (tap to type)"><button type="button" class="btn pp-step" id="ppPlus" aria-label="One label more">+</button></div>
     <label class="check"><input type="checkbox" id="ppNumber"> Number them (1 / 3, 2 / 3, 3 / 3) instead of printing the same label</label>
+    <div class="pp-range" id="ppRange" hidden>Print only <input id="ppFrom" type="number" inputmode="numeric" min="1" aria-label="First label"> to <input id="ppTo" type="number" inputmode="numeric" min="1" aria-label="Last label"> <span id="ppOf"></span></div>
     <div class="row-actions"><button type="button" class="btn primary" id="ppGo">Print 1 label</button><button type="button" class="btn" id="ppCancel">Cancel</button></div>
   </div>
 </div>
@@ -1360,26 +1365,34 @@ async function linkPhotos(b) {
 /* Every box's label says 1 / 1 (operator's rule: one box = one piece). A "2 OF 2" printed on the carrier's
    label does NOT carry over; numbered labels (1 / N … N / N) only come from "Number them" in the print pop-up. */
 function pieceOf() { return '1 / 1'; }
-const PRINT_MAX = 20;
-/* n labels → backend jobs: the same label in batches of up to 5 copies, or one job per numbered label (1 / n … n / n). */
-function printJobs(b, n, numbered) {
-  if (numbered && n > 1) return Array.from({ length: n }, (_, i) => ({ piece: `${i + 1} / ${n}`, copies: 1 }));
+const PRINT_MAX = 99;
+/* n labels → backend jobs: the same label in batches of up to 5 copies, or one job per numbered label
+   (from / n … to / n; normally 1 / n … n / n, or just some of them, e.g. 13 / 28 … 28 / 28 or only 7 / 28). */
+function printJobs(b, n, numbered, from = 1, to = n) {
+  if (numbered && n > 1) return Array.from({ length: to - from + 1 }, (_, i) => ({ piece: `${from + i} / ${n}`, copies: 1 }));
   const piece = pieceOf(b), jobs = [];
   for (let left = n; left > 0; left -= 5) jobs.push({ piece, copies: Math.min(5, left) });
   return jobs;
 }
-async function printLabel(b, auto, n, numbered) {
+async function printLabel(b, auto, n, numbered, from, to) {
   const name = caps(b.row.customer);
   n = Math.min(PRINT_MAX, Math.max(1, parseInt(n, 10) || 1));
+  from = Math.min(n, Math.max(1, parseInt(from, 10) || 1));
+  to = Math.min(n, Math.max(from, parseInt(to, 10) || n));
   if (!name || S.printing.has(b.id)) return;
   S.printing.add(b.id); render();
   try {
-    let j = null;
-    for (const job of printJobs(b, n, numbered)) {
+    let j = null, k = 0;
+    const jobs = printJobs(b, n, numbered, from, to);
+    for (const job of jobs) {
+      if (jobs.length > 3) notice(`Sending labels to the printer… ${++k} of ${jobs.length}`);
       j = await api('printAdd', { name, piece: job.piece, copies: job.copies });
       if (j.error || !j.ok) throw new Error(j.error || 'The backend didn’t take the label.');
     }
-    const what = n === 1 ? `Label for ${name}` : `${n} labels for ${name}`;
+    const part = numbered && n > 1 && (from > 1 || to < n);
+    const what = part ? (from === to ? `Label ${from} / ${n} for ${name}` : `Labels ${from} – ${to} of ${n} for ${name}`)
+      : n === 1 ? `Label for ${name}` : `${n} labels for ${name}`;
+    n = jobs.reduce((s, x) => s + x.copies, 0);
     if (!j.printerOnline) notice(`${what} ${n === 1 ? 'is' : 'are'} waiting — the label printer on the laptop isn’t running. ${n === 1 ? 'It prints' : 'They print'} as soon as it starts.`, true);
     else if (!auto) notice(`${what} sent to the printer.`);              // automatic prints stay quiet when all is well
   } catch (e) {
@@ -1459,31 +1472,57 @@ async function loadPics(b) {
 setInterval(syncDay, 30000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) syncDay(); });
 /* "Print label" opens this: + / − picks how many, then Print. */
-function openPrintPrompt(b) {
+/* "Print 1/N…" on the card opens it numbered, with the count selected so the total can be typed straight away. */
+function openPrintPrompt(b, numbered) {
   if (!caps(b.row.customer) || S.printing.has(b.id)) return;
-  S.pp = { id: b.id, n: 1, box: b };
-  $('#ppName').textContent = `${caps(b.row.customer)} · ${pieceOf(b)}`;
-  $('#ppNumber').checked = false;
-  ppShow(); $('#printPrompt').hidden = false; $('#ppPlus').focus();
+  const n = numbered ? 2 : 1;
+  S.pp = { id: b.id, n, box: b, from: 1, to: n };
+  $('#ppName').textContent = numbered ? `${caps(b.row.customer)} · numbered 1 / N … N / N — how many?` : `${caps(b.row.customer)} · ${pieceOf(b)}`;
+  $('#ppNumber').checked = !!numbered;
+  ppShow(); $('#printPrompt').hidden = false;
+  if (numbered) { $('#ppN').focus(); $('#ppN').select(); } else $('#ppPlus').focus();
 }
-function ppShow() {
-  const n = S.pp.n;
-  $('#ppN').textContent = String(n);
+/* How many (+ / − or type it, up to 99); "Number them" prints 1 / N … N / N, and "Print only _ to _" picks
+   some of them (a missing or spoiled label: e.g. only 7 / 28). */
+function ppShow(typing) {
+  const p = S.pp, n = p.n, numbered = n > 1 && $('#ppNumber').checked;
+  if (!typing) $('#ppN').value = String(n);
   $('#ppMinus').disabled = n <= 1; $('#ppPlus').disabled = n >= PRINT_MAX;
   $('#ppNumber').disabled = n <= 1;
-  $('#ppGo').textContent = `Print ${n} label${n === 1 ? '' : 's'}`;
+  $('#ppRange').hidden = !numbered;
+  $('#ppFrom').value = String(p.from); $('#ppTo').value = String(p.to); $('#ppFrom').max = $('#ppTo').max = String(n);
+  $('#ppOf').textContent = `of ${n}`;
+  const k = p.to - p.from + 1;
+  $('#ppGo').textContent = !numbered ? `Print ${n} label${n === 1 ? '' : 's'}`
+    : k === n ? `Print 1 / ${n} … ${n} / ${n}` : k === 1 ? `Print ${p.from} / ${n}` : `Print ${p.from} / ${n} … ${p.to} / ${n}`;
 }
+function ppCount(n, typing) { if (!S.pp) return; S.pp.n = Math.min(PRINT_MAX, Math.max(1, n)); S.pp.from = 1; S.pp.to = S.pp.n; ppShow(typing); }
 function ppClose() { $('#printPrompt').hidden = true; S.pp = null; }
-$('#ppMinus').addEventListener('click', () => { if (S.pp) { S.pp.n = Math.max(1, S.pp.n - 1); ppShow(); } });
-$('#ppPlus').addEventListener('click', () => { if (S.pp) { S.pp.n = Math.min(PRINT_MAX, S.pp.n + 1); ppShow(); } });
+$('#ppMinus').addEventListener('click', () => { if (S.pp) ppCount(S.pp.n - 1); });
+$('#ppPlus').addEventListener('click', () => { if (S.pp) ppCount(S.pp.n + 1); });
+$('#ppN').addEventListener('input', e => { const v = parseInt(e.target.value, 10); if (v >= 1) ppCount(v, v <= PRINT_MAX); });
+$('#ppN').addEventListener('change', () => { if (S.pp) ppShow(); });
+$('#ppN').addEventListener('focus', e => e.target.select());
+$('#ppNumber').addEventListener('change', () => { if (S.pp) ppShow(); });
+for (const id of ['#ppFrom', '#ppTo']) {
+  $(id).addEventListener('focus', e => e.target.select());
+  $(id).addEventListener('change', () => {
+    const p = S.pp; if (!p) return;
+    const f = parseInt($('#ppFrom').value, 10), t = parseInt($('#ppTo').value, 10);
+    p.from = Math.min(p.n, Math.max(1, f || 1));
+    p.to = Math.min(p.n, Math.max(1, t || p.n));
+    if (p.to < p.from) { if (id === '#ppFrom') p.to = p.from; else p.from = p.to; }
+    ppShow();
+  });
+}
 $('#ppCancel').addEventListener('click', ppClose);
 $('#printPrompt').addEventListener('click', e => { if (e.target === e.currentTarget) ppClose(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && S.pp) ppClose(); });
 $('#ppGo').addEventListener('click', () => {
   if (!S.pp) return;
-  const b = S.pp.box, n = S.pp.n, numbered = $('#ppNumber').checked;
+  const b = S.pp.box, n = S.pp.n, numbered = $('#ppNumber').checked, { from, to } = S.pp;
   ppClose();
-  if (b) printLabel(b, false, n, numbered);
+  if (b) printLabel(b, false, n, numbered, from, to);
 });
 const unlinked = () => allBoxes().filter(b => b.day === S.day && b.sheetRow && !b.photosLinked && b.photos.length && !LINK.q.includes(b.id) && S.linking !== b.id);
 async function updateRows() {
@@ -1603,6 +1642,7 @@ function cardHtml(b) {
     <button type="button" class="btn small" data-act="reread" ${ph.length ? '' : 'disabled'}>Read again</button>
     <button type="button" class="btn small" data-act="totals">${b.noTotals ? 'Add (TOTAL)' : 'No (TOTAL)'}</button>
     <button type="button" class="btn small" data-act="print" ${row.customer && !S.printing.has(b.id) ? '' : 'disabled'}>${S.printing.has(b.id) ? 'Printing…' : 'Print label'}</button>
+    <button type="button" class="btn small" data-act="printn" ${row.customer && !S.printing.has(b.id) ? '' : 'disabled'}>Print 1/N…</button>
     ${vs === 'ready' && !S.busy ? '<button type="button" class="btn small primary" data-act="send1">Send to sheet</button>' : ''}
     ${vs === 'check' ? '<button type="button" class="btn small tape" data-act="ok">Looks good</button>' : ''}
     ${vs === 'dirty' ? '<button type="button" class="btn small tape" data-act="upd">Update sheet row</button>' : ''}
@@ -1732,6 +1772,7 @@ document.addEventListener('click', e => {
         .then(() => planSend([S.boxes.get(id)]));
       break;
     case 'print': openPrintPrompt(b); break;
+    case 'printn': openPrintPrompt(b, true); break;
     case 'lineqty': lineStep(id, +a.dataset.i, +a.dataset.d); break;
     case 'linesame': lineSame(id, +a.dataset.i); break;
     case 'totals': toggleTotals(id); break;
