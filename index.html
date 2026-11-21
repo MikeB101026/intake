@@ -34,11 +34,18 @@ button,input,textarea,select{font:inherit;color:inherit}
 button{cursor:pointer}
 :focus-visible{outline:3px solid var(--tape);outline-offset:2px}
 [hidden]{display:none!important}
-.top{position:sticky;top:0;z-index:5;background:var(--bg);display:flex;align-items:center;gap:10px;padding-block:10px;border-bottom:1px solid var(--line)}
+.top{position:sticky;top:0;z-index:5;background:var(--bg);display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;padding-block:10px;border-bottom:1px solid var(--line)}
 .brand{font:700 22px/1 var(--f-display);letter-spacing:.02em;text-transform:uppercase;flex:1;min-width:0}
 .brand span{color:var(--muted);font-weight:600}
 .today{font:600 15px/1 var(--f-display);letter-spacing:.06em;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:7px 10px}
 .gear{border:1px solid var(--line);background:var(--card);border-radius:6px;padding:6px 10px;font-weight:600}
+/* work meter: the strip under the header (entries today · an hour · a minute), tap for the details */
+.pace{flex:0 0 100%;min-width:0;display:block;position:relative;text-align:left;border:1px solid var(--line);background:var(--card);border-radius:8px;padding:5px 30px 5px 10px}
+.pace::after{content:"›";position:absolute;right:10px;top:50%;transform:translateY(-50%);font:700 24px/1 var(--f-display);color:var(--muted)}
+.pace-1{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 12px;font:600 13px/1 var(--f-display);letter-spacing:.07em;color:var(--muted)}
+.pace-1 span{white-space:nowrap}
+.pace-1 b{font:700 23px/1 var(--f-display);letter-spacing:.01em;color:var(--ink);margin-right:1px}
+.pace-2{display:block;margin-top:2px;font-size:12px;line-height:1.2;color:var(--muted)}
 .notice{margin-top:12px;padding:10px 12px;border-radius:8px;background:var(--info-bg);color:var(--info-ink);font-size:15px}
 .notice.bad{background:var(--bad-bg);color:var(--bad-ink)}
 .notice button{margin-left:8px;border:0;background:none;text-decoration:underline;color:inherit;padding:0}
@@ -146,6 +153,14 @@ button{cursor:pointer}
 .pp-range input{font:700 22px/1 var(--f-mono);width:3ch;text-align:center;border:1px solid var(--line);border-radius:8px;padding:6px 2px;background:var(--bg);color:var(--ink);-moz-appearance:textfield;appearance:textfield}
 .pp .check{display:flex;flex-direction:row;align-items:center;gap:8px;font-weight:500}
 .pp .row-actions .btn{flex:1}
+.pace-in{max-height:85vh}
+.pw{display:flex;flex-direction:column;gap:8px;font-size:16px;line-height:1.35;overflow:auto;min-height:0}
+.pw-n{font:700 22px/1 var(--f-display);letter-spacing:.03em;text-transform:uppercase}
+.pw-n b{font-size:44px;margin-right:2px}
+.pw-rate{font-weight:600;font-size:18px}
+.pw-h{font:700 13px/1 var(--f-display);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);border-top:1px solid var(--line2);padding-top:10px;margin-top:4px}
+.pw-hours{display:flex;flex-wrap:wrap;gap:6px}
+.pw-hours span{font:500 14px/1 var(--f-mono);background:var(--line2);border-radius:5px;padding:6px 8px}
 .link-box{border:1px solid var(--line);border-radius:10px;background:var(--card);padding:12px;display:flex;flex-direction:column;gap:8px;align-items:flex-start}
 .pair-code{font:700 56px/1 var(--f-mono);letter-spacing:.1em;padding:6px 0}
 .sheet input.pair-in{font:700 22px/1 var(--f-mono);letter-spacing:.15em;width:8.5em;border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:var(--bg)}
@@ -158,6 +173,7 @@ button{cursor:pointer}
 .cam-top button.on{background:var(--tape);color:var(--tape-ink)}
 .cam-count{font:700 22px/1 var(--f-display);letter-spacing:.04em}
 .cam-box{font:700 15px/1 var(--f-display);letter-spacing:.06em;background:var(--kraft);color:var(--kraft-ink);border-radius:6px;padding:5px 8px}
+.cam-pace{position:absolute;left:12px;right:12px;top:calc(60px + env(safe-area-inset-top,0px));text-align:center;font:700 15px/1 var(--f-display);letter-spacing:.07em;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.9);pointer-events:none}
 .cam-strip{display:flex;gap:6px;overflow-x:auto;padding:8px 12px;background:#000;min-height:66px}
 .cam-strip .thumb{flex:0 0 auto;width:50px;height:50px;border-color:#333}
 .cam-bottom{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px;padding:10px 16px calc(14px + env(safe-area-inset-bottom,0px));background:#000}
@@ -186,6 +202,7 @@ button{cursor:pointer}
     <div class="brand">700 Islands <span>Intake</span></div>
     <div class="today" id="todayChip">—</div>
     <button class="gear" id="gearBtn" type="button" aria-label="Settings">Settings</button>
+    <button class="pace" id="paceBtn" type="button" aria-haspopup="dialog" aria-label="My work today"><span class="pace-1" id="paceL1"><span><b>—</b> ENTRIES</span></span><span class="pace-2" id="paceL2">today · this device</span></button>
   </header>
   <div id="notice" class="notice" hidden></div>
   <div class="link-bar" id="linkBar" hidden><span id="linkBarMsg"></span><button class="btn primary" id="linkBarBtn" type="button">Link this device</button></div>
@@ -277,6 +294,14 @@ button{cursor:pointer}
     <div class="row-actions"><button type="button" class="btn primary" id="ppGo">Print 1 label</button><button type="button" class="btn" id="ppCancel">Cancel</button></div>
   </div>
 </div>
+<!-- work meter details (opens from the strip under the header) -->
+<div class="pp" id="paceDlg" hidden role="dialog" aria-modal="true" aria-labelledby="paceTitle">
+  <div class="pp-in pace-in">
+    <b id="paceTitle">My work · today · this device</b>
+    <div class="pw" id="paceBody"></div>
+    <div class="row-actions"><button type="button" class="btn primary" id="paceClose">Close</button></div>
+  </div>
+</div>
 
 <!-- camera -->
 <div class="cam" id="cam" hidden>
@@ -289,6 +314,7 @@ button{cursor:pointer}
     <span class="cam-box" id="camBox">BOX 1</span>
     <button type="button" id="torchBtn" hidden>Light</button>
   </div>
+  <div class="cam-pace" id="camPace"></div>
   <div class="cam-strip" id="camStrip"></div>
   <div class="cam-bottom">
     <button type="button" class="side" id="newBoxBtn">NEXT BOX</button>
@@ -502,7 +528,216 @@ let trkIdx = null;                                   // tracking → boxes index
 const allBoxes = () => [...S.boxes.values()];
 const pendingPhotos = () => [...S.photos.values()].filter(p => !p.box).sort((a, b) => a.t - b.t);
 
-async function saveBox(b) { b.updatedAt = Date.now(); S.boxes.set(b.id, b); trkIdx = null; await putBox(b); render(); }
+/* ================= work meter: entries, time on the app, speed (this device only) =================
+   ENTRY = a box of THIS device that is in the sheet now (not imported, has a row, not on a wrong row). It is read
+   from the box records, never from send events, so a box can't count twice; it counts on the box's own day, at the
+   hour of its first photo.
+   TIME ON THE APP = every tap, key and arriving photo is a "tick". Ticks less than 2 minutes apart make one span;
+   spans are kept per calendar day in localStorage ("pace:YYYY-MM-DD" = {v, s: [[start, end], …], g: [sec, …]}, whole
+   seconds since midnight; g = first-photo second of own in-sheet cards deleted here, so deleting a card doesn't lower
+   the count). When shown, gaps of up to 5 minutes between spans count as work; longer ones are breaks and are left out.
+   SPEED = entries first shot after the day's first tick ÷ time on the app, once there are 3 entries and 5 minutes.
+   Nothing goes to the backend or the sheet, box records and the database are untouched, and the meter never calls
+   render(): one small timer redraws the strip. Any error switches the meter off and leaves the app as it was. */
+const PACE_JOIN = 120, PACE_BREAK = 300, PACE_KEEP_DAYS = 90, PACE_MAX_SPANS = 300;
+const PACE = { off: false, ready: false, day: '', s: [], g: [], cur: null, savedAt: 0, unsaved: false, stale: true, c: null, timer: 0, t1: null, t2: null, html: null };
+const PACE_GONE = new WeakSet();                             // boxes already counted as deleted: a second tap on Delete must not add the card twice
+const paceSec = t => { const d = new Date(t); return d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds(); };
+const paceMine = b => !b.imported && !!b.sheetRow && !b.wrongRow;
+const paceDur = s => s < 60 ? 'under 1 min' : s < 3600 ? `${Math.floor(s / 60)} min` : `${Math.floor(s / 3600)} h ${Math.floor(s % 3600 / 60)} min`;
+const paceEach = s => s < 60 ? `${s} s` : `${Math.floor(s / 60)} min${s % 60 ? ` ${s % 60} s` : ''}`;
+const paceClock = s => { const h = Math.floor(s / 3600); return `${h % 12 || 12}:${pad(Math.floor(s % 3600 / 60))} ${h < 12 ? 'am' : 'pm'}`; };
+const paceHour = h => `${h % 12 || 12} ${h < 12 ? 'AM' : 'PM'}`;
+const paceDayName = k => { const [y, m, d] = k.split('-').map(Number); return `${['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'][new Date(y, m - 1, d).getDay()]} ${d} ${MON[m - 1]}`; };
+const paceSpeed = (n, T) => n >= 3 && T >= 300 ? { hr: Math.round(n * 3600 / T), min: (n * 60 / T).toFixed(1), each: Math.round(T / n) } : null;
+function paceFail() { PACE.off = true; for (const id of ['#paceBtn', '#paceDlg', '#camPace']) { const el = $(id); if (el) el.hidden = true; } }
+/* Spans in order and joined: overlapping ones, and ones less than 2 minutes apart, become one. */
+function paceJoin(list) {
+  const out = [];
+  for (const x of list.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1])) {
+    const r = out[out.length - 1];
+    if (r && x[0] <= r[1] + PACE_JOIN) r[1] = Math.max(r[1], x[1]); else out.push([x[0], x[1]]);
+  }
+  while (out.length > PACE_MAX_SPANS) {                      // never in real use: close the smallest gap
+    let k = 1;
+    for (let i = 2; i < out.length; i++) if (out[i][0] - out[i - 1][1] < out[k][0] - out[k - 1][1]) k = i;
+    out[k - 1][1] = out[k][1]; out.splice(k, 1);
+  }
+  return out;
+}
+function paceRead(day) {                                     // a missing or damaged record reads as an empty day
+  let o = null;
+  try { o = JSON.parse(localStorage.getItem('pace:' + day) || 'null'); } catch (e) {}
+  const ok = v => typeof v === 'number' && v >= 0 && v < 86400;
+  const s = o && Array.isArray(o.s) ? o.s.filter(x => Array.isArray(x) && ok(x[0]) && ok(x[1]) && x[1] >= x[0]).map(x => [Math.floor(x[0]), Math.floor(x[1])]) : [];
+  return { s: paceJoin(s), g: o && Array.isArray(o.g) ? o.g.filter(ok).map(Math.floor) : [] };
+}
+const paceWrite = (day, s, g) => { try { localStorage.setItem('pace:' + day, JSON.stringify({ v: 1, s, g })); } catch (e) {} };   // storage full: the day still counts while the app stays open
+function paceDays() {
+  const out = [];
+  try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && /^pace:\d{4}-\d\d-\d\d$/.test(k)) out.push(k.slice(5)); } } catch (e) {}
+  return out;
+}
+function paceLoad(day) {
+  const d = paceRead(day);
+  PACE.day = day; PACE.s = d.s; PACE.g = d.g; PACE.cur = d.s.length ? d.s[d.s.length - 1] : null; PACE.unsaved = false; PACE.stale = true;
+}
+/* What is stored is read again and joined in before every save, so a second open page never wipes time. */
+function paceSave() {
+  if (!PACE.day) return;
+  const old = paceRead(PACE.day), at = PACE.cur ? PACE.cur[1] : -1;
+  if (old.g.length > PACE.g.length) { PACE.g = old.g; PACE.stale = true; }      // another open page deleted a card (a shorter stored list = a write that didn't go through)
+  const f0 = PACE.s.length ? PACE.s[0][0] : -1;
+  PACE.s = paceJoin(old.s.concat(PACE.s));
+  if ((PACE.s.length ? PACE.s[0][0] : -1) !== f0) PACE.stale = true;             // another page was on the app earlier: the day's first tick moved
+  PACE.cur = at < 0 ? null : (PACE.s.find(x => x[0] <= at && at <= x[1]) || null);
+  PACE.savedAt = Date.now(); PACE.unsaved = false;
+  paceWrite(PACE.day, PACE.s, PACE.g);
+}
+/* A tap, a key or a photo. Stretches the current span, or starts a new one after 2 minutes of nothing. */
+function paceTick() {
+  if (PACE.off) return;
+  try {
+    const now = Date.now(), day = dayKeyOf(new Date(now)), sec = paceSec(now);
+    if (day !== PACE.day) { if (PACE.unsaved) paceSave(); paceLoad(day); }       // the first tick, or past midnight
+    const c = PACE.cur;
+    if (c && sec >= c[0] && sec <= c[1] + PACE_JOIN) {
+      if (sec <= c[1]) return;                                                   // the same second again
+      c[1] = sec; PACE.unsaved = true;
+      if (Math.abs(now - PACE.savedAt) >= 10000) paceSave();                     // a stretched span is saved every 10 s at most
+    } else {
+      PACE.cur = [sec, sec]; PACE.s.push(PACE.cur); PACE.stale = true; paceSave();   // a new span is saved at once
+    }
+    paceSoon();
+  } catch (e) { paceFail(); }
+}
+function paceCalc(s) {                                       // time on the app (T) and the breaks left out of it
+  const runs = [];
+  for (const x of s) { const r = runs[runs.length - 1]; if (r && x[0] - r[1] <= PACE_BREAK) r[1] = Math.max(r[1], x[1]); else runs.push([x[0], x[1]]); }
+  return { T: runs.reduce((t, r) => t + r[1] - r[0], 0), breaks: runs.slice(1).map((r, i) => [runs[i][1], r[0]]),
+    first: runs.length ? runs[0][0] : -1, last: runs.length ? runs[runs.length - 1][1] : -1 };
+}
+function paceCount(day) {                                    // today's numbers, straight from the box records (PACE holds this day)
+  const first = PACE.s.length ? PACE.s[0][0] : Infinity;
+  const c = { n: 0, nT: 0, hours: {}, waiting: 0, photos: 0, fixed: 0, other: 0 };
+  const add = sec => { c.n++; if (sec >= first) c.nT++; const h = Math.floor(sec / 3600); c.hours[h] = (c.hours[h] || 0) + 1; };
+  for (const b of S.boxes.values()) {
+    if (b.day !== day) continue;
+    if (b.imported) { c.other++; continue; }
+    const np = (b.photos || []).length; c.photos += np;
+    if (paceMine(b)) { add(paceSec(b.createdAt || 0)); if (b.ok || Object.keys(b.edited || {}).length) c.fixed++; }
+    else if (np && b.id !== S.current) c.waiting++;
+  }
+  for (const sec of PACE.g) add(sec);
+  return c;
+}
+function paceHistory(today) {                                // the 7 latest earlier days with entries; time and speed only for days the meter saw
+  const days = new Map();
+  for (const b of S.boxes.values()) if (b.day && b.day < today && paceMine(b)) { if (!days.has(b.day)) days.set(b.day, []); days.get(b.day).push(paceSec(b.createdAt || 0)); }
+  for (const d of paceDays()) if (d < today && !days.has(d)) days.set(d, []);
+  const out = [];
+  for (const d of [...days.keys()].sort().reverse()) {
+    if (out.length >= 7) break;
+    const rec = paceRead(d), secs = days.get(d).concat(rec.g);
+    if (!secs.length) continue;
+    const k = paceCalc(rec.s), first = k.first < 0 ? Infinity : k.first;
+    out.push({ d, n: secs.length, T: k.T, timed: k.last >= 0, sp: paceSpeed(secs.filter(x => x >= first).length, k.T) });
+  }
+  return out;
+}
+function paceShow() {
+  if (PACE.off || !PACE.ready) return;                       // until the saved boxes are loaded the strip keeps its place with "— ENTRIES"
+  try {
+    const now = Date.now(), day = dayKeyOf(new Date(now));
+    if (day !== PACE.day) { if (PACE.unsaved) paceSave(); paceLoad(day); }       // the strip follows the real date, not the day picked in the list
+    const re = PACE.stale || !PACE.c;
+    if (re) { PACE.c = paceCount(day); PACE.stale = false; }
+    const c = PACE.c, k = paceCalc(PACE.s), sp = paceSpeed(c.nT, k.T);
+    const paused = k.last >= 0 && paceSec(now) - k.last > PACE_BREAK;
+    const word = c.n === 1 ? 'ENTRY' : 'ENTRIES', stat = (v, w) => `<span><b>${v}</b> ${w}</span>`;
+    const t1 = stat(c.n, word) + (sp ? stat(sp.hr, 'AN HOUR') + stat(sp.min, 'A MIN') : '');
+    const t2 = 'today · this device · ' + (k.last < 0 ? 'no time on the app yet' : paceDur(k.T) + (paused ? ' · CLOCK PAUSED' : ' on the app'));
+    if (t1 !== PACE.t1) {
+      PACE.t1 = t1; $('#paceL1').innerHTML = t1;
+      $('#camPace').textContent = `${c.n} ${word}` + (sp ? ` · ${sp.hr} AN HOUR · ${sp.min} A MIN` : '');
+    }
+    if (t2 !== PACE.t2) { PACE.t2 = t2; $('#paceL2').textContent = t2; }
+    const say = `My work, ${t2}: ${c.n} ${word.toLowerCase()}` + (sp ? `, ${sp.hr} an hour, ${sp.min} a minute` : '') + '. Tap for details.';
+    if ($('#paceBtn').getAttribute('aria-label') !== say) $('#paceBtn').setAttribute('aria-label', say);
+    if (re && !$('#paceDlg').hidden) paceOpen();             // the details are open: their numbers follow too
+  } catch (e) { paceFail(); }
+}
+function paceSoon() { if (!PACE.timer && !PACE.off) PACE.timer = setTimeout(() => { PACE.timer = 0; paceShow(); }, 300); }
+function paceDirty() { PACE.stale = true; paceSoon(); }     // called from saveBox: a flag and one timer, nothing else
+/* A card deleted here: its row stays in the sheet, so an own in-sheet box stays counted (on its own day). */
+function paceGone(b) {
+  if (PACE.off) return;
+  try {
+    if (b && b.day && paceMine(b) && !PACE_GONE.has(b)) {
+      PACE_GONE.add(b);
+      const old = paceRead(b.day), g = old.g.concat(paceSec(b.createdAt || 0)).slice(-500);
+      paceWrite(b.day, old.s, g);
+      if (b.day === PACE.day) PACE.g = g;
+    }
+    paceDirty();
+  } catch (e) { paceFail(); }
+}
+function paceOpen() {                                        // opens the details, or brings them up to date while they are open
+  if (PACE.off || !PACE.ready) return;
+  try {
+    const day = TODAY();
+    if (PACE.unsaved) paceSave();
+    if (day !== PACE.day) paceLoad(day);
+    const c = PACE.c = paceCount(day); PACE.stale = false;
+    const k = paceCalc(PACE.s), sp = paceSpeed(c.nT, k.T), L = [], ent = n => `${n} ${n === 1 ? 'entry' : 'entries'}`;
+    L.push(`<div class="pw-n"><b>${c.n}</b> ${c.n === 1 ? 'entry' : 'entries'} in the sheet</div>`);
+    L.push(sp ? `<div class="pw-rate">${sp.hr} an hour · ${sp.min} a minute · one entry every ${paceEach(sp.each)}</div>`
+      : `<div class="muted">Speed shows after 3 entries and 5 minutes on the app.</div>`);
+    if (k.last >= 0) L.push(`<div>${paceDur(k.T)} on the app · ${paceClock(k.first)} to ${paceClock(k.last)}</div>`);
+    if (k.breaks.length) L.push(`<div class="muted">Breaks left out (over 5 min without a tap): ${k.breaks.map(x => `${paceClock(x[0])}–${paceClock(x[1])}`).join(', ')}</div>`);
+    const early = c.n - c.nT;
+    if (early > 0) L.push(`<div class="muted">${early === 1 ? '1 entry was' : `${early} entries were`} made before the clock started: not in the speed</div>`);
+    if (c.waiting) L.push(`<div>Not in the sheet yet: ${c.waiting} box${c.waiting === 1 ? '' : 'es'}${S.day !== day ? ' · pick today in the day list' : ''}</div>`);
+    if (c.photos || c.fixed) L.push(`<div>Photos ${c.photos}${c.fixed ? ` · fixed or checked by hand ${c.fixed}` : ''}</div>`);
+    if (c.other && S.day === day) L.push(`<div>Also on today’s list: ${c.other} row${c.other === 1 ? '' : 's'} from other devices or typed by hand</div>`);
+    const hrs = Object.keys(c.hours).map(Number).sort((a, b) => a - b);
+    if (hrs.length) L.push(`<div class="pw-h">By hour</div><div class="pw-hours">${hrs.map(h => `<span>${paceHour(h)} · <b>${c.hours[h]}</b></span>`).join(' ')}</div>`);
+    const past = paceHistory(day);
+    if (past.length) L.push(`<div class="pw-h">Last 7 days</div>` + past.map(p => `<div>${paceDayName(p.d)} · ${ent(p.n)}${p.timed ? ` · ${paceDur(p.T)}${p.sp ? ` · ${p.sp.hr} an hour` : ''}` : ''}</div>`).join(''));
+    L.push(`<div class="muted">Time counts while you take photos or tap. Over 5 minutes without a tap is a break and is left out.</div>`);
+    const html = L.join(''), pb = $('#paceBody'), dlg = $('#paceDlg');
+    if (html !== PACE.html) { const y = pb.scrollTop; PACE.html = html; pb.innerHTML = html; pb.scrollTop = y; }   // rewritten only when something changed, so it never moves under a finger
+    if (dlg.hidden) { dlg.hidden = false; pb.scrollTop = 0; $('#paceClose').focus(); }
+    paceShow();
+  } catch (e) { paceFail(); }
+}
+function paceClose() { const d = $('#paceDlg'); if (d) d.hidden = true; }
+function paceEvent(e) {
+  if (PACE.off || !e.isTrusted) return;
+  const t = e.target;
+  if (t && t.closest && t.closest('#settings,#paceDlg,#paceBtn')) return;      // setting up the app or reading the meter is not logging
+  paceTick();
+}
+function paceBoot() {                                        // after the saved boxes are loaded
+  if (PACE.off) return;
+  try {
+    const day = TODAY();
+    if (day !== PACE.day) paceLoad(day);
+    try { const d = new Date(); d.setDate(d.getDate() - PACE_KEEP_DAYS); const cut = dayKeyOf(d); for (const k of paceDays()) if (k < cut) localStorage.removeItem('pace:' + k); } catch (e) {}
+    PACE.ready = true; PACE.stale = true; paceShow();
+  } catch (e) { paceFail(); }
+}
+try {
+  for (const ev of ['pointerdown', 'keydown', 'input', 'change', 'wheel']) document.addEventListener(ev, paceEvent, { capture: true, passive: true });
+  document.addEventListener('visibilitychange', () => { try { if (PACE.off) return; if (document.hidden) { if (PACE.unsaved) paceSave(); } else paceSoon(); } catch (e) {} });
+  window.addEventListener('pagehide', () => { try { if (!PACE.off && PACE.unsaved) paceSave(); } catch (e) {} });
+  $('#paceBtn').addEventListener('click', paceOpen);
+  $('#paceClose').addEventListener('click', paceClose);
+  $('#paceDlg').addEventListener('click', e => { if (e.target === e.currentTarget) paceClose(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') paceClose(); });
+} catch (e) { paceFail(); }
+
+async function saveBox(b) { b.updatedAt = Date.now(); S.boxes.set(b.id, b); trkIdx = null; paceDirty(); await putBox(b); render(); }
 async function patchBox(id, fn) { const b = S.boxes.get(id); if (!b) return; fn(b); await saveBox(b); }
 
 /* ================= backend ================= */
@@ -784,6 +1019,7 @@ $('#nativeCam').addEventListener('change', async e => {
    finish the box exactly like the buttons here do. */
 let nativeQ = Promise.resolve();
 window.__nativeShot = url => {
+  paceTick();                                                          // work meter: a photo is work
   nativeQ = nativeQ.then(async () => {
     try {
       const r = await fetch(url, { cache: 'no-store' });
@@ -799,8 +1035,8 @@ window.__nativeShot = url => {
     } catch (e) { notice('A photo from the camera couldn’t be saved. Take it again.', true); }
   });
 };
-window.__nativeNextBox = () => { nativeQ = nativeQ.then(() => finishCurrent()); };
-window.__nativeDone = () => { nativeQ = nativeQ.then(() => { finishCurrent(); render(); }); };
+window.__nativeNextBox = () => { paceTick(); nativeQ = nativeQ.then(() => finishCurrent()); };
+window.__nativeDone = () => { paceTick(); nativeQ = nativeQ.then(() => { finishCurrent(); render(); }); };
 window.__isNativeApp = !!window.AndroidIntake;
 
 /* ================= gallery import ================= */
@@ -1449,7 +1685,9 @@ async function syncDay() {
       const first = Math.min(...rows.map(r => +r.row)), end = Math.max(...rows.map(r => +r.row)) + 1;
       if (end > (S.nextRowSeen || 0)) { S.nextRowSeen = end; ls.set('nextRowSeen', String(end)); }
       for (const b of allBoxes().filter(x => x.day === day && x.sheetRow && !x.imported)) {
-        const wrong = +b.sheetRow < first;
+        // Only a box sent in the last 3 days is newly flagged: the backend looks back 500 rows, so an older day can come back
+        // cut off at the top, and its first boxes are in the sheet all the same.
+        const wrong = +b.sheetRow < first && (!!b.wrongRow || Date.now() - (b.sentAt || 0) < 3 * 86400000);
         if (!!b.wrongRow !== wrong) await patchBox(b.id, x => { x.wrongRow = wrong; });
       }
     }
@@ -1718,6 +1956,7 @@ function renderPlan() {
     S.plan.dupes = dupes.filter(x => x !== d); S.plan.list = list.filter(b => b.id !== d.b.id);
     if (!S.plan.dupes.length) { const rest = S.plan.list; S.plan = null; renderPlan(); if (rest.length) executeSend(rest); else render(); }
     else renderPlan();
+    syncDay();                                           // check the row it took right away (a row of an earlier day shows as "wrong row")
   });
   $('#planSkip').onclick = () => executeSend(list.filter(b => !dupes.some(d => d.b.id === b.id)));
   $('#planAll').onclick = () => executeSend(list);
@@ -1805,6 +2044,7 @@ async function deleteBox(id) {
   if (b.sheetRow) ls.set('goneRows', JSON.stringify([...goneRows(), String(b.sheetRow)].slice(-500)));   // its row stays in the sheet: don't bring the card back
   for (const pid of b.photos) { await delPhoto(pid); S.photos.delete(pid); }
   await delBoxDb(id); S.boxes.delete(id); trkIdx = null; S.expanded.delete(id); render();
+  paceGone(b);                                                         // work meter: its row is still in the sheet, so it stays counted
 }
 
 /* lightbox: zoom, move to another box, flip label/inside, remove */
@@ -1992,6 +2232,7 @@ $('#purgeBtn').addEventListener('click', async () => {
   } catch (e) { notice('This phone’s storage couldn’t be opened. Photos won’t be kept.', true); }
   try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch (e) {}
   render();
+  paceBoot();                                          // work meter strip under the header
   if (S.cfg.url && S.cfg.token) {
     loadWatch().catch(() => {});
     // Reads cut off when the app was closed pick up again by themselves, in box order.
@@ -2003,7 +2244,7 @@ $('#purgeBtn').addEventListener('click', async () => {
   }
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) $('#camBtn').disabled = true;
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
-  setInterval(() => { $('#todayChip').textContent = capsDate(TODAY()); }, 60000);
+  setInterval(() => { $('#todayChip').textContent = capsDate(TODAY()); paceShow(); }, 60000);
 })();
 })();
 </script>
