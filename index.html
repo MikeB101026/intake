@@ -988,6 +988,8 @@ function saveCurNote() {
   clearTimeout(noteTimer); noteTimer = 0;
   const ta = $('#curNote'), id = ta && ta.dataset.box, b = id && S.boxes.get(id);
   if (!b || b.sheetRow || id !== S.current) return Promise.resolve();   // only ever into the box in progress, never a finished one
+  if (ta.dataset.dirty !== '1') return Promise.resolve();                // only what was typed here: never a stale copy over a card note
+  ta.dataset.dirty = '';
   const v = ta.value.trim();
   if ((b.note || '') === v) return Promise.resolve();
   return patchBox(id, x => { x.note = v; });       // sets the note at once; the promise only waits for the save
@@ -1001,6 +1003,7 @@ function notePreRead(id) {                           // label already sorted: re
 function fitNote() { const ta = $('#curNote'); ta.style.height = 'auto'; ta.style.height = Math.max(52, ta.scrollHeight + 4) + 'px'; }   // grows with the note
 window.addEventListener('resize', () => { if (!$('#curBar').hidden) fitNote(); });   // folding, turning the phone, split screen
 $('#curNote').addEventListener('input', () => {
+  $('#curNote').dataset.dirty = '1';
   $('#curTell').classList.toggle('has', !!$('#curNote').value.trim()); fitNote();
   clearTimeout(noteTimer); noteTimer = setTimeout(saveCurNote, 700);
 });
@@ -1208,6 +1211,8 @@ S.active = new Set(); S.readStart = new Map(); S.again = new Map();   // box id 
 setInterval(() => { if (S.active.size) readProg(); }, 1000);   // live seconds counter while a box reads
 function queueRead(id, opts) {
   opts = opts || {};
+  const bx = S.boxes.get(id);                                                    // after a "Read again", later reads of that box stay careful
+  if (!opts.effort && bx && bx.read && bx.read.careful) opts = Object.assign({ effort: 'high', careful: true }, opts);
   const q = S.readQ.find(j => j.id === id);
   if (q) Object.assign(q.opts, opts);                                            // already waiting: keep the stronger request (Read again = high)
   else if (S.active.has(id)) S.again.set(id, Object.assign({}, S.again.get(id), opts));   // being read now: read it again right after (pump)
@@ -1230,7 +1235,7 @@ function pump() {
       S.active.delete(job.id);
       const more = S.again.get(job.id); S.again.delete(job.id);
       // The note changed, a photo was added or "Read again" was tapped during the read: read it again before it can be sent.
-      if ((again || more) && !S.readQ.some(j => j.id === job.id)) S.readQ.unshift({ id: job.id, opts: Object.assign({}, again ? job.opts : {}, more || {}) });
+      if ((again || more) && !S.readQ.some(j => j.id === job.id)) S.readQ.unshift({ id: job.id, opts: Object.assign({}, job.opts, more || {}) });   // a careful read stays careful
       render(); readProg(); pump(); autoSend();
     });
   }
@@ -2045,8 +2050,8 @@ function renderCurrent() {
   $('#curBar').hidden = !b || !b.photos.length || !!b.sheetRow;   // a box already in the sheet is no longer in progress
   if (!b || b.sheetRow) return;
   const ta = $('#curNote');                          // the note box follows the box in progress, never overwritten while typing
-  if (ta.dataset.box !== b.id) { ta.dataset.box = b.id; ta.value = b.note || ''; }
-  else if (document.activeElement !== ta && !noteTimer) ta.value = b.note || '';
+  if (ta.dataset.box !== b.id) { ta.dataset.box = b.id; ta.value = b.note || ''; ta.dataset.dirty = ''; }
+  else if (document.activeElement !== ta && !noteTimer && ta.dataset.dirty !== '1') ta.value = b.note || '';
   $('#curTell').classList.toggle('has', !!ta.value.trim());
   if (!$('#curBar').hidden) fitNote();
   const ph = b.photos.map(id => S.photos.get(id)).filter(Boolean);
@@ -2121,6 +2126,8 @@ document.addEventListener('change', e => {
   if (field === 'note') {
     const id = card.dataset.id, b = S.boxes.get(id), was = b ? (b.note || '') : '';
     patchBox(id, x => { x.note = v.trim(); });
+    const ta = $('#curNote');                        // the box in progress: its note box shows the card's note at once
+    if (id === S.current && ta.dataset.box === id) { ta.value = v.trim(); ta.dataset.dirty = ''; }
     // A box not in the sheet yet is read again with the new note (a box being read right now is read again
     // as soon as it finishes; the box in progress gets it when you tap Finish; a box being sent keeps its row).
     if (b && (b.note || '') !== was && !b.sheetRow && b.photos.length && b.id !== S.current && !S.sending.has(id)) queueRead(id);
