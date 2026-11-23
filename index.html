@@ -61,6 +61,12 @@ button{cursor:pointer}
 .shot .small{font-size:13px;opacity:.85}
 .pending{margin-top:12px;padding:12px;border:2px dashed var(--tape);border-radius:10px;display:flex;flex-direction:column;gap:10px}
 .pending-head{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:17px}
+/* "Tell Claude about this box": a note for the box in progress, typed (or spoken with the keyboard's mic) before Finish */
+.tell{display:flex}
+.tell textarea{flex:1;min-width:0;min-height:52px;resize:none;overflow:hidden;border:2px solid var(--line);border-radius:8px;background:var(--card);padding:12px;font:500 17px/1.35 var(--f-body)}
+.tell textarea::placeholder{color:var(--muted);opacity:1}
+.tell textarea:focus{border-color:var(--ink);outline:none}
+.tell.has textarea{border-color:var(--tape);background:var(--card)}
 .prog{margin-top:12px;padding:10px 12px;border-radius:8px;background:var(--info-bg);color:var(--info-ink);font-size:15px}
 .thumbs{display:flex;flex-wrap:wrap;gap:6px}
 .thumb{position:relative;width:60px;height:60px;border-radius:6px;overflow:hidden;border:1px solid var(--line);background:var(--line2);padding:0}
@@ -98,6 +104,7 @@ button{cursor:pointer}
 .chip{font-size:12px;font-weight:600;padding:3px 7px;border-radius:5px;background:var(--line2);color:var(--muted)}
 .chip.flag{background:var(--flag-bg);color:var(--flag-ink)}
 .chip.bad{background:var(--bad-bg);color:var(--bad-ink)}
+.chip.note{background:var(--info-bg);color:var(--info-ink);max-width:100%;overflow-wrap:anywhere}
 .detail{border-top:1px solid var(--line2);padding:12px;display:flex;flex-direction:column;gap:12px}
 .proof{display:grid;grid-template-columns:minmax(0,1fr);gap:12px}
 @media (min-width:620px){.proof{grid-template-columns:200px minmax(0,1fr)}}
@@ -214,6 +221,7 @@ button{cursor:pointer}
   </section>
   <div id="curBar" class="pending" hidden>
     <div class="pending-head"><b id="curText">Box #1</b><button class="btn primary" id="curFinish" type="button">Finish this box →</button></div>
+    <div class="tell" id="curTell"><textarea id="curNote" rows="1" placeholder="Tell Claude about this box…" aria-label="Tell Claude about this box (optional). Type it, or use the microphone on your keyboard." autocomplete="off" spellcheck="false"></textarea></div>
     <label class="shot lab nextphone" for="nativeCam"><span class="big">+ NEXT PHOTO</span><span class="small">phone camera · label or contents, this same box</span></label>
     <div class="thumbs" id="curThumbs"></div>
   </div>
@@ -412,12 +420,14 @@ const itemsPrompt = (n, note) => `These ${n} photos show more of what was INSIDE
   (note ? `\n\nThe operator's note: "${note}"` : '') +
   `\n\nReply with ONLY one JSON object: {"contents":[{"item":"","qty":1,"photos":[]}],"flags":[]} — photos are the image numbers (1–${n}) the item appears in.`;
 /* ---- Read-ahead prompts: the label and each contents photo are read WHILE the operator keeps shooting. ---- */
-const LABEL_PROMPT = (n, today) => `Read ${n === 1 ? 'this photo' : `these ${n} photos`} of the OUTSIDE of ONE package (shipping label and carton print). Today is ${today}.
+const LABEL_PROMPT = (n, today, note) => `Read ${n === 1 ? 'this photo' : `these ${n} photos`} of the OUTSIDE of ONE package (shipping label and carton print). Today is ${today}.` +
+  (note ? `\nThe operator's note about this package (trust it over the photos when they conflict; it may give the customer, the tracking number, the weight, the invoice or what is inside): "${note}"` : '') + `
 Reply with ONLY one JSON object, exactly these keys:
-{"customer":"","tracking":"","weight_printed":"","weight_unit":"lb","shipper":"","invoice":false,"label_photo":1,"label_box":[0,0,1,1],"paperwork_items":[{"item":"","qty":1}],"carton_items":[{"item":"","qty":1}],"flags":[],"badges":[]}
+{"customer":"","tracking":"","weight_printed":"","weight_unit":"lb","shipper":"","invoice":false,"label_photo":1,"label_box":[0,0,1,1],"paperwork_items":[{"item":"","qty":1}],"carton_items":[{"item":"","qty":1}],${note ? '"note_items":[{"item":"","qty":1}],' : ''}"flags":[],"badges":[]}
 - label_photo / label_box: the image with the clearest view of the main shipping label and that label's bounding box as fractions [left, top, right, bottom].
 - paperwork_items: when this paperwork is also the packing slip or invoice (LABEL PAPERWORK in the rules), its product lines and quantities, in order. [] for an ordinary label.
-- carton_items: products named in the carton print, or a bill of lading's description lines, if any (used only when the box has no inside photos). [] when none.`;
+- carton_items: products named in the carton print, or a bill of lading's description lines, if any (used only when the box has no inside photos). [] when none.` + (note ? `
+- note_items: when the operator's note says anything about what is inside the box: the box's WHOLE contents with the note applied, as "BRAND ITEM" lines in CAPS with their quantities. Start from paperwork_items (or carton_items) when there are any, change or add what the note says, and keep every line the note does not mention (use the paperwork's or carton's name for the same item). [] when the note names no contents.` : '');
 const ITEM_PROMPT = `This ONE photo shows something that was INSIDE a package: an item, a product box, a packing slip or an invoice.
 Reply with ONLY one JSON object: {"items":[{"item":"","qty":1}],"slip":false,"invoice":false,"flags":[]}
 - items: what this photo shows, "BRAND ITEM" in CAPS per the rules (no SKU codes); qty = units or packs visible in THIS photo.
@@ -956,11 +966,37 @@ async function currentBox() {
   return b.id;
 }
 function finishCurrent() {
+  saveCurNote();                                     // a note still being typed goes with the box (sets b.note at once)
   const b = S.current && S.boxes.get(S.current);
   if (b && b.photos.length && !b.sheetRow) queueRead(b.id);
   S.current = null; ls.set('curBox', '');
   render(); camBoxLabel();
 }
+/* "Tell Claude about this box" on the box in progress. The note is the box's b.note (the same as "Note for Claude"
+   on its card). It is saved as you type, goes into every read of the box (label, contents, full read), and when it
+   changes the label is read again with it in the background, so the read is ready by the time you tap Finish. */
+let noteTimer = 0;
+function saveCurNote() {
+  clearTimeout(noteTimer); noteTimer = 0;
+  const ta = $('#curNote'), id = ta && ta.dataset.box, b = id && S.boxes.get(id);
+  if (!b || b.sheetRow || id !== S.current) return Promise.resolve();   // only ever into the box in progress, never a finished one
+  const v = ta.value.trim();
+  if ((b.note || '') === v) return Promise.resolve();
+  return patchBox(id, x => { x.note = v; });       // sets the note at once; the promise only waits for the save
+}
+function notePreRead(id) {                           // label already sorted: read it again with the new note now
+  const b = id && S.boxes.get(id);
+  if (!b || b.sheetRow || !S.cfg.url || !S.cfg.token) return;
+  const labels = b.photos.map(pid => S.photos.get(pid)).filter(p => p && p.kind === 'label');
+  if (labels.length && preOf(b.id).labelKey !== labelKeyOf(labels, 'medium', b.note)) startLabelRead(preOf(b.id), labels, 'medium', b.note);
+}
+function fitNote() { const ta = $('#curNote'); ta.style.height = 'auto'; ta.style.height = Math.max(52, ta.scrollHeight + 4) + 'px'; }   // grows with the note
+window.addEventListener('resize', () => { if (!$('#curBar').hidden) fitNote(); });   // folding, turning the phone, split screen
+$('#curNote').addEventListener('input', () => {
+  $('#curTell').classList.toggle('has', !!$('#curNote').value.trim()); fitNote();
+  clearTimeout(noteTimer); noteTimer = setTimeout(saveCurNote, 700);
+});
+$('#curNote').addEventListener('change', () => { const id = $('#curNote').dataset.box; saveCurNote(); notePreRead(id); });
 function camBoxLabel() {
   const b = CAM.target ? S.boxes.get(CAM.target) : (S.current && S.boxes.get(S.current));
   const nextSeq = 1 + Math.max(0, ...allBoxes().filter(x => x.day === TODAY()).map(x => x.seq || 0));
@@ -1160,10 +1196,14 @@ async function sortPhotos(list) {
 /* ================= reading a box ================= */
 const READ_BUDGET_MS = 20000;
 const PARALLEL = 1;   // one box read at a time, in order (the operator's choice); inside a box the calls run side by side
-S.active = new Set(); S.readStart = new Map();
+S.active = new Set(); S.readStart = new Map(); S.again = new Map();   // box id -> a read asked for while that box was being read
 setInterval(() => { if (S.active.size) readProg(); }, 1000);   // live seconds counter while a box reads
 function queueRead(id, opts) {
-  if (!S.readQ.some(j => j.id === id) && !S.active.has(id)) S.readQ.push({ id, opts: opts || {} });
+  opts = opts || {};
+  const q = S.readQ.find(j => j.id === id);
+  if (q) Object.assign(q.opts, opts);                                            // already waiting: keep the stronger request (Read again = high)
+  else if (S.active.has(id)) S.again.set(id, Object.assign({}, S.again.get(id), opts));   // being read now: read it again right after (pump)
+  else S.readQ.push({ id, opts });
   patchBox(id, b => { if (b.status !== 'sent') b.status = 'queued'; b.readError = ''; });
   pump();
 }
@@ -1178,7 +1218,13 @@ function pump() {
   while (S.active.size < PARALLEL && S.readQ.length) {
     const job = S.readQ.shift();
     S.active.add(job.id);
-    readBox(job.id, job.opts).finally(() => { S.active.delete(job.id); render(); readProg(); pump(); autoSend(); });
+    readBox(job.id, job.opts).catch(() => false).then(again => {
+      S.active.delete(job.id);
+      const more = S.again.get(job.id); S.again.delete(job.id);
+      // The note changed, a photo was added or "Read again" was tapped during the read: read it again before it can be sent.
+      if ((again || more) && !S.readQ.some(j => j.id === job.id)) S.readQ.unshift({ id: job.id, opts: Object.assign({}, again ? job.opts : {}, more || {}) });
+      render(); readProg(); pump(); autoSend();
+    });
   }
   readProg(); render();
 }
@@ -1190,6 +1236,7 @@ async function readBox(id, opts) {
   const T0 = performance.now(), ms = {};
   S.readStart.set(id, Date.now());
   const wasSent = !!b0.sheetRow;
+  const noteUsed = b0.note || '';                    // a note changed while this read runs: the box is read again (see pump)
   await patchBox(id, b => { if (!wasSent) b.status = 'reading'; b.readError = ''; });
   if (!S.watch) loadWatch().catch(() => {});
   // 1) Label vs contents. Usually already done while shooting (Haiku); wait for any still running,
@@ -1216,23 +1263,30 @@ async function readBox(id, opts) {
   try {
     const t1 = performance.now();
     let r = null, escalated = false;
+    // The operator typed the tracking number in the note: that counts as the second reading (no high re-read for it).
+    const byNote = x => {
+      if (!x || !x.verify || x.verify.match) return x;
+      if (x.verify.sure && x.verify.second && !/\?/.test(x.verify.second)) return x;   // a clear close-up reading that disagrees is never overruled by the note
+      const rt = alnum(normTrack(x.res && x.res.tracking));
+      return rt.length >= 8 && alnum(noteUsed).includes(rt) ? Object.assign({}, x, { verify: Object.assign({}, x.verify, { match: true, by: 'note' }) }) : x;
+    };
     // Fast path: most of the box was already read while it was being shot (see readAhead).
-    if (first === 'medium' && !careful) r = await readAhead(b0, labels, items).catch(() => null);
+    if (first === 'medium' && !careful) r = byNote(await readAhead(b0, labels, items).catch(() => null));
     if (r) {
       // Only the LABEL is re-read at high when it looks unsure; the contents stay as read.
       if (unsure(r) && labels.length && performance.now() - T0 < READ_BUDGET_MS / 2) {
-        const lab = await startLabelRead(preOf(b0.id), labels, 'high').catch(() => null);
+        const lab = await startLabelRead(preOf(b0.id), labels, 'high', b0.note).catch(() => null);
         if (lab && lab.res && typeof lab.res === 'object') {
           const extraFlags = (Array.isArray(lab.res.flags) ? lab.res.flags : []).map(caps).filter(Boolean);
-          r = Object.assign({}, r, { res: Object.assign({}, lab.res, { invoice: !!(r.res.invoice || lab.res.invoice) }), verify: verifyOf(lab.res, lab.v), flags: [...new Set([...r.flags, ...extraFlags])] });
+          r = byNote(Object.assign({}, r, { res: Object.assign({}, lab.res, { invoice: !!(r.res.invoice || lab.res.invoice) }), verify: verifyOf(lab.res, lab.v), flags: [...new Set([...r.flags, ...extraFlags])] }));
           escalated = true;
         }
       }
     } else {
-      r = await readOnce(b0, labels, items, first, careful);
+      r = byNote(await readOnce(b0, labels, items, first, careful));
       // 20-second target: a second, high-effort read only when the first one left enough time for it.
       // Otherwise the box shows "Check" with the reason, and "Read again" does the careful read on demand.
-      if (first !== 'high' && unsure(r) && performance.now() - T0 < READ_BUDGET_MS / 2) { r = await readOnce(b0, labels, items, 'high', careful); escalated = true; }
+      if (first !== 'high' && unsure(r) && performance.now() - T0 < READ_BUDGET_MS / 2) { r = byNote(await readOnce(b0, labels, items, 'high', careful)); escalated = true; }
     }
     ms.read = Math.round(performance.now() - t1);
     ms.total = Math.round(performance.now() - T0);
@@ -1262,13 +1316,15 @@ async function readBox(id, opts) {
       if (b.row.weight === '0') extra.push('UNDER 0.5 LB — LOGGED 0');
       b.flags = [...new Set([...flags, ...extra])];
       b.badges = [...new Set((Array.isArray(res.badges) ? res.badges : []).map(caps).filter(Boolean))];
-      b.read = { at: Date.now(), effort: escalated ? 'high' : first, escalated, careful, ahead: !!r.ahead, labelPhoto: parseInt(res.label_photo, 10) || null, weightPrinted: wp, unit: res.weight_unit || '', verify, ms };
+      b.read = { at: Date.now(), effort: escalated ? 'high' : first, escalated, careful, ahead: !!r.ahead, labelPhoto: parseInt(res.label_photo, 10) || null, weightPrinted: wp, unit: res.weight_unit || '', verify, ms, note: noteUsed };
       b.readError = ''; b.ok = false;
       if (b.status !== 'sent') b.status = 'read';
     });
   } catch (e) {
     await patchBox(id, b => { if (b.status !== 'sent') b.status = 'error'; b.readError = e.message || 'Reading failed. Tap Read again.'; });
   }
+  const now = S.boxes.get(id);
+  return !!(now && !now.sheetRow && (now.note || '') !== noteUsed);   // true: read it again with the new note
 }
 /* One full read at one effort level. The main read, the extra contents photos and the independent
    tracking check all run AT THE SAME TIME, so the check adds no waiting. */
@@ -1322,17 +1378,24 @@ async function readOnce(b0, labels, items, effort, careful) {
    every contents photo is read on its own as soon as it's sorted. When the box is finished,
    only the results are combined, so the wait after NEXT BOX is a few seconds, not a full read. */
 S.pre = new Map();                                     // boxId -> { labelKey, labelP, items: Map(photoId -> promise) }
-function preOf(boxId) { let x = S.pre.get(boxId); if (!x) { x = { labelKey: '', labelP: null, items: new Map() }; S.pre.set(boxId, x); } return x; }
-function labelRead(labels, effort) {
+function preOf(boxId) { let x = S.pre.get(boxId); if (!x) { x = { labelKey: '', labelP: null, checkKey: '', checkP: null, items: new Map() }; S.pre.set(boxId, x); } return x; }
+const labelKeyOf = (labels, effort, note) => labels.map(x => x.id).join(',') + '|' + effort + '|' + (note || '');
+function labelRead(pre, labels, effort, note) {
   const lb = labels.slice(0, 6), lp = lb.find(p => p.lbox) || lb[0];
-  const mainP = claude({ system: SYS, prompt: LABEL_PROMPT(lb.length, capsDate(TODAY())), effort, images: lb.map(p => ({ blob: p.blob, max: SIZE.label })) });
-  const checkP = (async () => claude({ prompt: VERIFY_PROMPT, images: [{ blob: await labelCrop(lp), max: SIZE.label }], effort }))().catch(() => null);
-  return Promise.all([mainP, checkP]).then(([res, v]) => ({ res, v }));
+  const mainP = claude({ system: SYS, prompt: LABEL_PROMPT(lb.length, capsDate(TODAY()), note), effort, images: lb.map(p => ({ blob: p.blob, max: SIZE.label })) });
+  // The tracking check never sees the note, so a new note reuses it (a failed check is tried again next time).
+  const ck = lb.map(p => p.id + ':' + (p.lbox || '')).join(',') + '|' + effort;
+  if (pre.checkKey !== ck || !pre.checkP) {
+    pre.checkKey = ck;
+    const cp = pre.checkP = (async () => claude({ prompt: VERIFY_PROMPT, images: [{ blob: await labelCrop(lp), max: SIZE.label }], effort }))()
+      .catch(() => { if (pre.checkP === cp) pre.checkKey = ''; return null; });
+  }
+  return Promise.all([mainP, pre.checkP]).then(([res, v]) => ({ res, v }));
 }
 function itemRead(p) { return claude({ system: SYS, prompt: ITEM_PROMPT, effort: 'low', images: [{ blob: p.blob, max: SIZE.inside }] }); }
-function startLabelRead(pre, labels, effort) {
-  pre.labelKey = labels.map(x => x.id).join(',') + '|' + effort;
-  pre.labelP = labelRead(labels, effort); pre.labelP.catch(() => {});
+function startLabelRead(pre, labels, effort, note) {
+  pre.labelKey = labelKeyOf(labels, effort, note);
+  pre.labelP = labelRead(pre, labels, effort, note); pre.labelP.catch(() => {});
   return pre.labelP;
 }
 function preRead(p) {
@@ -1341,7 +1404,7 @@ function preRead(p) {
   const pre = preOf(b.id);
   if (p.kind === 'label') {
     const labels = b.photos.map(id => S.photos.get(id)).filter(x => x && x.kind === 'label');
-    if (pre.labelKey !== labels.map(x => x.id).join(',') + '|medium') startLabelRead(pre, labels, 'medium');
+    if (pre.labelKey !== labelKeyOf(labels, 'medium', b.note)) startLabelRead(pre, labels, 'medium', b.note);
   } else if (!pre.items.has(p.id)) { const pr = itemRead(p); pr.catch(() => {}); pre.items.set(p.id, pr); }
 }
 function verifyOf(res, v) {
@@ -1352,16 +1415,18 @@ function verifyOf(res, v) {
 /* Uses whatever was read ahead, reads only what's missing, then combines. Throws if anything failed (the caller falls back to a full read). */
 async function readAhead(b0, labels, items) {
   const pre = preOf(b0.id);
-  if (labels.length && pre.labelKey !== labels.map(x => x.id).join(',') + '|medium') startLabelRead(pre, labels, 'medium');
+  if (labels.length && pre.labelKey !== labelKeyOf(labels, 'medium', b0.note)) startLabelRead(pre, labels, 'medium', b0.note);
   for (const p of items) if (!pre.items.has(p.id)) { const pr = itemRead(p); pr.catch(() => {}); pre.items.set(p.id, pr); }
   const [lab, per] = await Promise.all([labels.length ? pre.labelP : Promise.resolve(null), Promise.all(items.map(p => pre.items.get(p.id)))]);
   const res = Object.assign({}, (lab && lab.res) || {});
   if (labels.length && (!lab || !lab.res || typeof lab.res !== 'object')) throw new Error('label read failed');
   const flags = (Array.isArray(res.flags) ? res.flags : []).map(caps).filter(Boolean);
   let invoice = !!res.invoice, contents = [];
-  for (const r of per) { for (const f of (r && r.flags) || []) if (caps(f)) flags.push(caps(f)); if (r && r.invoice) invoice = true; }
+  const noteNoInv = /\bNO\s+INVOICE\b/i.test(b0.note || '');   // the operator said NO INVOICE: a photo read without the note doesn't overrule it
+  for (const r of per) { for (const f of (r && r.flags) || []) if (caps(f)) flags.push(caps(f)); if (r && r.invoice && !noteNoInv) invoice = true; }
   const clean = r => ((r && r.items) || []).filter(x => x && x.item);
   const paper = (Array.isArray(res.paperwork_items) ? res.paperwork_items : []).filter(c => c && c.item);
+  const noted = b0.note ? (Array.isArray(res.note_items) ? res.note_items : []).filter(c => c && c.item) : [];   // contents the operator's note gives
   const labelProof = paper.length ? [(labels[(parseInt(res.label_photo, 10) || 1) - 1] || labels[0]).id] : [];
   if (items.length === 1 && !b0.note && !paper.length) {
     contents = clean(per[0]).map(c => ({ line: contentsLine(c), photos: [items[0].id] }));
@@ -1373,6 +1438,8 @@ async function readAhead(b0, labels, items) {
       return { line: contentsLine(c), photos: ids.length ? ids : labelProof };
     });
     for (const f of (m && m.flags) || []) if (caps(f)) flags.push(caps(f));
+  } else if (noted.length) {                         // no inside photos: the note says what is in the box
+    contents = noted.map(c => ({ line: contentsLine(c), photos: [] }));
   } else if (paper.length) {
     contents = paper.map(c => ({ line: contentsLine(c), photos: labelProof }));
   } else if (Array.isArray(res.carton_items) && res.carton_items.some(c => c && c.item)) {
@@ -1418,7 +1485,7 @@ function reasons(b) {
   if (!b.imported && !ph.some(p => p.kind === 'label')) r.push('No label photo — add one or type the row.');
   if (!row.tracking) r.push('No tracking number.');
   else if (/NOT IN FRAME|\?/.test(row.tracking)) r.push('Tracking not fully readable — reshoot or type it.');
-  if (b.read && b.read.verify && !b.read.verify.match && b.read.verify.by !== 'barcode' && !(b.edited || {}).tracking) r.push(`Tracking read two ways: ${b.read.verify.first} / ${b.read.verify.second || '—'}. Check the label.`);
+  if (b.read && b.read.verify && !b.read.verify.match && b.read.verify.by !== 'barcode' && b.read.verify.by !== 'note' && !(b.edited || {}).tracking) r.push(`Tracking read two ways: ${b.read.verify.first} / ${b.read.verify.second || '—'}. Check the label.`);
   const tk = alnum(row.tracking);
   if (/^1Z/.test(tk) && tk.length !== 18) r.push(`UPS tracking numbers have 18 characters — this one has ${tk.length}.`);
   if (/^TBA/.test(tk) && tk.length !== 15) r.push(`Amazon TBA numbers have 15 characters — this one has ${tk.length}.`);
@@ -1465,7 +1532,7 @@ async function loadWatch() {
 }
 
 /* ================= sending ================= */
-const sendable = () => allBoxes().filter(b => b.day === S.day && !b.sheetRow && viewStatus(b) === 'ready').sort((a, b) => a.seq - b.seq);
+const sendable = () => allBoxes().filter(b => b.day === S.day && !b.sheetRow && b.id !== S.current && viewStatus(b) === 'ready').sort((a, b) => a.seq - b.seq);   // never the box still being shot
 const dirtyBoxes = () => allBoxes().filter(b => b.day === S.day && b.sheetRow && !b.wrongRow && isDirty(b));
 /* ONE TAP: checks for repeats, writes the rows, then saves the photos in the background.
    The boxes lock as "Sending…" the moment it's tapped, so there's nothing to tap twice. */
@@ -1479,8 +1546,8 @@ async function planSend(only, auto) {
     await Promise.all(list.map(b => { if (!b.sendTry) b.sendTry = { at: Date.now(), from: S.nextRowSeen || 0 }; return putBox(b); }));   // the FIRST try counts
     let hits;
     if (await backendV() >= 3) {                      // v3+ backend: repeat check + write in one round trip (an early v2 ignored checkDupes)
-      const r = await api('append', { rows: rowsOf(list), checkDupes: true });
-      if (!r.dupes) return await finishSend(list, r.placed, r.nextRow);
+      const rows = rowsOf(list), r = await api('append', { rows, checkDupes: true });
+      if (!r.dupes) return await finishSend(list, r.placed, r.nextRow, rows);
       hits = r.dupes;
     } else hits = (await api('dupes', { trackings: list.map(b => b.row.tracking) })).hits;
     hits = Object.fromEntries(Object.entries(hits || {}).filter(([t]) => trkId(t)));   // a vendor name with no number is not a repeat
@@ -1537,14 +1604,16 @@ async function executeSend(list) {
   if (!list.length) return;
   S.busy = true; S.plan = null; for (const b of list) S.sending.add(b.id); renderPlan(); render();
   barMsg(`Writing ${list.length} row${list.length === 1 ? '' : 's'}…`);
-  try { const r = await api('append', { rows: rowsOf(list) }); await finishSend(list, r.placed, r.nextRow); }
+  try { const rows = rowsOf(list), r = await api('append', { rows }); await finishSend(list, r.placed, r.nextRow, rows); }
   catch (e) { sendFailed(list, e); }
 }
-async function finishSend(list, placed, nextRow) {
+async function finishSend(list, placed, nextRow, rows) {
   S.autoSendFails = 0;
   const end = Math.max(+nextRow || 0, ...placed.map(p => +p.row + 1));   // where the sheet ends now (see isOwnLostRow)
   if (end > (S.nextRowSeen || 0)) { S.nextRowSeen = end; ls.set('nextRowSeen', String(end)); }
-  for (const p of placed) await patchBox(p.id, x => { x.sheetRow = p.row; x.status = 'sent'; x.sentCells = cells(x); x.sentAt = Date.now(); delete x.sendTry; });
+  // What the sheet got is what was sent, not what the box says now: a change made during the send shows as "Changed".
+  const sentOf = (id, x) => { const s = (rows || []).find(r => r.id === id); return s ? [...s.cells, capsDate(x.day)] : cells(x); };
+  for (const p of placed) await patchBox(p.id, x => { x.sheetRow = p.row; x.status = 'sent'; x.sentCells = sentOf(p.id, x); x.sentAt = Date.now(); delete x.sendTry; });
   for (const b of list) S.sending.delete(b.id);
   S.busy = false;
   const rs = placed.map(p => p.row), seqs = placed.map(p => '#' + (S.boxes.get(p.id) || {}).seq).join(', ');
@@ -1853,7 +1922,8 @@ function cardHtml(b) {
   const sub = [last4, row.weight !== '' && row.weight != null ? row.weight + ' lb' : '', row.shipper].filter(Boolean).join(' · ') || `${b.photos.length} photo${b.photos.length === 1 ? '' : 's'}`;
   const st = vs === 'sent' ? `✓ Row ${b.sheetRow}` : STATUS_TEXT[vs];
   const watch = watchHits(b), rs = b.imported && vs === 'sent' ? [] : reasons(b);
-  const chips = [...watch.map(w => `<span class="chip bad">${esc(w)}</span>`), ...b.flags.map(f => `<span class="chip flag">${esc(f)}</span>`), ...(ex ? b.badges.map(x => `<span class="chip">${esc(x)}</span>`) : [])].join('');
+  const noteChip = b.note ? [`<span class="chip note">NOTE: ${esc(b.note.length > 90 ? b.note.slice(0, 88) + '…' : b.note)}</span>`] : [];
+  const chips = [...watch.map(w => `<span class="chip bad">${esc(w)}</span>`), ...noteChip, ...b.flags.map(f => `<span class="chip flag">${esc(f)}</span>`), ...(ex ? b.badges.map(x => `<span class="chip">${esc(x)}</span>`) : [])].join('');
   let h = `<article class="card" data-id="${esc(b.id)}"><button type="button" class="card-top" data-act="toggle" aria-expanded="${ex}">
     <span class="no">#${b.seq}</span><span class="who"><b>${esc(row.customer || (vs === 'reading' ? 'Reading…' : 'Box ' + b.seq))}</b><span>${esc(sub)}</span></span>
     <span class="st ${vs}">${esc(st)}</span></button>`;
@@ -1966,6 +2036,11 @@ function renderCurrent() {
   const b = S.current && S.boxes.get(S.current);
   $('#curBar').hidden = !b || !b.photos.length;
   if (!b) return;
+  const ta = $('#curNote');                          // the note box follows the box in progress, never overwritten while typing
+  if (ta.dataset.box !== b.id) { ta.dataset.box = b.id; ta.value = b.note || ''; }
+  else if (document.activeElement !== ta && !noteTimer) ta.value = b.note || '';
+  $('#curTell').classList.toggle('has', !!ta.value.trim());
+  if (!$('#curBar').hidden) fitNote();
   const ph = b.photos.map(id => S.photos.get(id)).filter(Boolean);
   const nl = ph.filter(p => p.kind === 'label').length;
   $('#curText').textContent = `Box #${b.seq} in progress — ${nl ? nl + ' label' : 'no label yet'}, ${ph.length - nl} other photo${ph.length - nl === 1 ? '' : 's'}`;
@@ -2032,7 +2107,14 @@ document.addEventListener('change', e => {
   const f = e.target.closest('[data-field]'); if (!f) return;
   const card = f.closest('[data-id]'); if (!card) return;
   const field = f.dataset.field; let v = f.value;
-  if (field === 'note') { patchBox(card.dataset.id, x => { x.note = v.trim(); }); return; }
+  if (field === 'note') {
+    const id = card.dataset.id, b = S.boxes.get(id), was = b ? (b.note || '') : '';
+    patchBox(id, x => { x.note = v.trim(); });
+    // A box not in the sheet yet is read again with the new note (a box being read right now is read again
+    // as soon as it finishes; the box in progress gets it when you tap Finish; a box being sent keeps its row).
+    if (b && (b.note || '') !== was && !b.sheetRow && b.photos.length && b.id !== S.current && !S.sending.has(id)) queueRead(id);
+    return;
+  }
   if (field === 'tracking') v = normTrack(v);
   else if (field === 'weight') v = v.trim() === '' ? '' : roundWeight(v, /kg/i.test(v) ? 'kg' : 'lb');
   else if (field === 'contents') v = v.split('\n').map(caps).filter(Boolean).map(l => l.replace(/\s*\/\/\/$/, '')).join(' ///\n');
