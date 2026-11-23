@@ -965,6 +965,14 @@ async function currentBox() {
   if (!b || b.sheetRow || b.day !== TODAY()) { b = await newBox(); S.current = b.id; ls.set('curBox', b.id); }
   return b.id;
 }
+/* A button on the card of the box in progress (Read again, + Camera then DONE, Send to sheet) finishes it: the note is
+   saved and the next photo starts a new box. Returns true when it was the box in progress. */
+function releaseCurrent(id) {
+  if (!id || id !== S.current) return false;
+  saveCurNote();
+  S.current = null; ls.set('curBox', ''); camBoxLabel();
+  return true;
+}
 function finishCurrent() {
   saveCurNote();                                     // a note still being typed goes with the box (sets b.note at once)
   const b = S.current && S.boxes.get(S.current);
@@ -1018,7 +1026,7 @@ $('#camClose').addEventListener('click', async () => { await CAM.queue; closeCam
 $('#camDone').addEventListener('click', async () => {
   const target = CAM.target;
   await CAM.queue; closeCamera(); render();
-  if (target) queueRead(target);
+  if (target) { releaseCurrent(target); queueRead(target); }   // + Camera on the box in progress: DONE finishes it too
   else finishCurrent();
 });
 document.addEventListener('keydown', e => { if (!$('#cam').hidden && (e.key === ' ' || e.key === 'Enter' || e.key === 'AudioVolumeUp' || e.key === 'AudioVolumeDown')) { e.preventDefault(); shoot(); } });
@@ -2034,8 +2042,8 @@ function renderPlan() {
 }
 function renderCurrent() {
   const b = S.current && S.boxes.get(S.current);
-  $('#curBar').hidden = !b || !b.photos.length;
-  if (!b) return;
+  $('#curBar').hidden = !b || !b.photos.length || !!b.sheetRow;   // a box already in the sheet is no longer in progress
+  if (!b || b.sheetRow) return;
   const ta = $('#curNote');                          // the note box follows the box in progress, never overwritten while typing
   if (ta.dataset.box !== b.id) { ta.dataset.box = b.id; ta.value = b.note || ''; }
   else if (document.activeElement !== ta && !noteTimer) ta.value = b.note || '';
@@ -2085,9 +2093,12 @@ document.addEventListener('click', e => {
     case 'toggle': S.expanded.has(id) ? S.expanded.delete(id) : (S.expanded.add(id), loadPics(b)); render(); break;
     case 'inv': patchBox(id, x => { x.row.invoice = !x.row.invoice; x.edited.invoice = true; }); break;
     case 'ok': patchBox(id, x => { x.ok = true; }); break;
-    case 'reread': S.held.delete(id); queueRead(id, { effort: 'high', careful: true }); break;   // "Read again" always reads at high
+    case 'reread': releaseCurrent(id); S.held.delete(id); queueRead(id, { effort: 'high', careful: true }); break;   // "Read again" always reads at high
     case 'cam': openCamera(id); break;
-    case 'send1': planSend([b]); break;
+    case 'send1':
+      // The box in progress: finish it; a note typed since its read is read first (it then goes by itself when clean).
+      if (releaseCurrent(id) && (b.note || '') !== ((b.read || {}).note || '')) { queueRead(id); render(); break; }
+      planSend([b]); break;
     case 'resend':
       patchBox(id, x => { x.sheetRow = null; x.sentCells = null; x.wrongRow = false; x.status = 'read'; x.ok = true; x.photosLinked = false; delete x.sendTry; })
         .then(() => planSend([S.boxes.get(id)]));
