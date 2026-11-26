@@ -1080,6 +1080,7 @@ $('#camClose').addEventListener('click', () => {
     const shot = CAM.n > 0; closeCamera(); render();
     // + Camera on a card: its new photos are read now, as with DONE (the box in progress is read when it's finished).
     if (target && shot && target !== S.current) queueRead(target);
+    if (target) relink(target);                      // a card already in the sheet: every new shot goes to Drive, in one save
     camLostNotice(); autoSend();
   });
 });
@@ -1087,7 +1088,7 @@ $('#camDone').addEventListener('click', () => {
   const target = CAM.target;
   afterPhotos(() => {
     closeCamera(); render();
-    if (target) { releaseCurrent(target); queueRead(target); }   // + Camera on the box in progress: DONE finishes it too
+    if (target) { releaseCurrent(target); queueRead(target); relink(target); }   // + Camera on the box in progress: DONE finishes it too
     else finishCurrent();
     camLostNotice();
   });
@@ -1260,18 +1261,21 @@ async function attachToBox(boxId, photos) {
     try { await txBoth(ps => { for (const p of photos) ps.put(p); }); } catch (e) { undo(); render(); throw e; }
     render(); return;
   }
-  const was = { ids: new Set(b.photos), status: b.status, ok: b.ok };
+  const was = { ids: new Set(b.photos), status: b.status, ok: b.ok, linked: b.photosLinked };
   for (const p of photos) { p.box = boxId; S.photos.set(p.id, p); if (!b.photos.includes(p.id)) b.photos.push(p.id); }
   if (b.status !== 'sent') { b.status = 'new'; b.ok = false; }
+  photosChanged(b);                                  // already in the sheet: its photos go to Drive again, these with them
   b.updatedAt = Date.now(); trkIdx = null; paceDirty();
   try { await txBoth((ps, bs) => { for (const p of photos) ps.put(p); bs.put(b); }); }
   catch (e) {
     b.photos = b.photos.filter(id => was.ids.has(id) || !photos.some(p => p.id === id));
     if (b.status === 'new' && !b.ok) { b.status = was.status; b.ok = was.ok; }
+    if (was.linked && b.photos.length === was.ids.size && b.photos.every(id => was.ids.has(id))) b.photosLinked = true;   // nothing new after all
     undo(); render(); throw e;
   }
   render();
   if (!shooting(boxId)) queueRead(boxId);            // a photo for a finished box is read with it (a read under way reads it again)
+  relink(boxId);                                     // a box in the sheet: to Drive now (QUICK CAM on its card: at DONE / Close)
 }
 let sorting = false;
 async function sortPending() {
@@ -1773,27 +1777,67 @@ async function finishSend(list, placed, nextRow, rows) {
    Runs by itself after every send, one box at a time, and retries on its own — nothing to tap. */
 const LINK = { q: [], running: false };
 function queueLinks(id) { if (!LINK.q.includes(id)) LINK.q.push(id); runLinks(); }
+/* A photo came into, or left, a box already in the sheet: its photos go to Drive again, so AV–BJ holds the box as it
+   is now (call inside the box's patch, then relink). QUICK CAM open on its card: DONE / Close save every shot at once. */
+function photosChanged(x) { if (x.sheetRow) { x.photosLinked = false; delete x.linkError; delete x.linkErrAt; } }
+const camOn = id => !!(CAM.stream && CAM.target === id);
+function relink(id) { const b = S.boxes.get(id); if (b && needsLink(b)) queueLinks(id); }
+/* The purge cleared this box's older photos from the phone (they stay in Drive and in that row's AV–BJ), and a photo
+   came in since: a new save would put only what is on the phone into AV–BJ and drop the cleared ones, so it isn't sent.
+   (A new row — Send as a new row — holds nothing yet: it gets what is on the phone.) */
+const linkBlocked = b => !!b.purged && +b.sheetRow === b.purged.row && b.photos.some(id => !b.purged.keep.includes(id));
+/* In the sheet, photos not (all) in Drive yet, and nothing stops the phone from sending them now. */
+const needsLink = b => !!(b.sheetRow && !b.photosLinked && !b.wrongRow && !linkBlocked(b) && !camOn(b.id));
+/* Photos that didn't save (no signal, Google busy) go again by themselves, for every day: at start-up, when the phone
+   is back online, and with the 30-s sync — each box at most every 2 minutes (force: now). */
+function retryLinks(force) {
+  if (!S.cfg.url || !S.cfg.token) return;
+  for (const b of unlinked()) if (force || !b.linkErrAt || Date.now() - b.linkErrAt >= 120000) queueLinks(b.id);
+}
+window.addEventListener('online', () => retryLinks(true));
 async function runLinks() {
   if (LINK.running) return;
   LINK.running = true;
   try {
     while (LINK.q.length) {
       const id = LINK.q.shift(), b = S.boxes.get(id);
-      if (!b || !b.sheetRow || b.photosLinked) continue;
+      if (!b || !needsLink(b)) continue;
+      // Up to 4 tries; a box that already failed gets one try each time it comes round (it comes round by itself),
+      // so a row that keeps failing never holds up the boxes behind it. The red notice is said once, not every time.
+      const first = !b.linkError;
       let err = null;
-      for (const wait of [0, 2000, 6000, 15000]) {           // up to 4 tries before asking for a tap
+      for (const wait of first ? [0, 2000, 6000, 15000] : [0]) {
         if (wait) await new Promise(r => setTimeout(r, wait));
         try { await linkPhotos(S.boxes.get(id)); err = null; break; } catch (e) { err = e; }
       }
-      if (err) { await patchBox(id, x => { x.linkError = err.message; }); notice(`Row ${b.sheetRow} is in the sheet, but its photos didn’t save (${err.message}). Tap “Save photos” at the bottom to try again.`, true); }
+      if (err) {
+        await patchBox(id, x => { x.linkError = err.message; x.linkErrAt = Date.now(); });
+        if (first) notice(`Row ${b.sheetRow} is in the sheet, but its photos didn’t save (${err.message}). The app tries again by itself — or tap “Save photos” at the bottom.`, true);
+      }
     }
   } finally { LINK.running = false; render(); }
 }
 async function linkPhotos(b) {
-  if (!b || !b.sheetRow || b.photosLinked) return;
-  const ph = b.photos.map(id => S.photos.get(id)).filter(Boolean);
+  if (!b || !b.sheetRow || b.photosLinked || b.wrongRow) return;
+  // Another phone's box: AV–BJ is rewritten with exactly the photos sent, so every one of its Drive photos must be on
+  // this phone first (with a part, the other phone's links would be lost).
+  const notHere = x => (x.pics || []).some(p => !(x.picsDone || []).includes(p.id));
+  if (b.imported && notHere(b)) {
+    S.linking = b.id; render();                       // (the save is under way: the sync leaves its links alone)
+    try { await loadPics(b); } finally { S.linking = null; }
+    b = S.boxes.get(b.id); if (!b || !b.sheetRow || b.photosLinked) return;
+    if (notHere(b)) throw new Error('some of its photos haven’t loaded from Drive yet');
+  }
+  // What this save sends and where: a photo added or removed meanwhile, or a move to another row, is never marked saved.
+  const row = +b.sheetRow, ids = b.photos.slice();
+  const same = x => +x.sheetRow === row && x.photos.length === ids.length && x.photos.every(id => ids.includes(id));
+  const ph = ids.map(id => S.photos.get(id)).filter(Boolean);
+  if (b.purged && row === b.purged.row) {            // cleared by the purge, nothing new since: AV–BJ still holds its photos
+    if (!linkBlocked(b)) await patchBox(b.id, x => { if (same(x)) { x.photosLinked = true; x.photosLeft = ph.length; delete x.linkError; } });
+    return;
+  }
   const ordered = [...ph.filter(p => p.kind === 'label'), ...ph.filter(p => p.kind !== 'label')].slice(0, 15);
-  if (!ordered.length) { await patchBox(b.id, x => { x.photosLinked = true; }); return; }
+  if (!ordered.length) { await patchBox(b.id, x => { if (same(x)) { x.photosLinked = true; x.savedIds = []; x.photosLeft = 0; delete x.linkError; } }); return; }
   S.linking = b.id; render();
   try {
     let nl = 0, ni = 0;
@@ -1802,9 +1846,21 @@ async function linkPhotos(b) {
       const lab = p.kind === 'label', label = lab ? `LABEL ${++nl}` : `INSIDE ${++ni}`;
       return toApiB64(p.blob, lab ? SIZE.label : SIZE.inside).then(b64 => ({ label, name: `${b.day} box ${b.seq} ${caps(b.row.customer).slice(0, 30)} ${label}.jpg`, b64 }));
     }));
-    await api('photos', { row: b.sheetRow, expectTracking: b.row.tracking, photos });
-    await patchBox(b.id, x => { x.photosLinked = true; delete x.linkError; });
-    for (const p of ph) { B64.delete(p.blob); CROPS.delete(p.blob); }      // free the phone's memory once a box is done
+    // The tracking the sheet holds (what was sent): one corrected here but not sent yet with Update would fail the check.
+    const r = await api('photos', { row, expectTracking: b.sentCells && b.sentCells[1] != null ? b.sentCells[1] : b.row.tracking, photos });
+    let again = false;
+    await patchBox(b.id, x => {
+      if (+x.sheetRow !== row) return;                 // it moved to another row meanwhile: that row gets its own save
+      x.savedIds = ordered.map(p => p.id);             // in Drive and in AV–BJ: the only photos the purge may clear
+      x.photosLeft = ph.length - ordered.length;       // past the 15 links: only on this phone (the card says so)
+      if (x.imported) {                                // its row now links new Drive files, all of them already on this phone
+        const pics = ((r && r.links) || []).map(l => { const m = String(l.url || '').match(/\/d\/([\w-]{20,})/); return m && { id: m[1], label: l.label }; });
+        if (pics.length === ordered.length && pics.every(Boolean)) { x.pics = pics; x.picsDone = pics.map(p => p.id); }
+      }
+      if (same(x)) { x.photosLinked = true; delete x.linkError; delete x.linkErrAt; } else again = true;
+    });
+    if (again) queueLinks(b.id);                       // a photo came or went during the save: save the box as it is now
+    else for (const p of ph) { B64.delete(p.blob); CROPS.delete(p.blob); }      // free the phone's memory once a box is done
   } finally { S.linking = null; }
 }
 /* ================= label printing =================
@@ -1872,6 +1928,7 @@ async function syncDay() {
   const day = S.day;
   try {
     const { rows = [] } = await api('dayRows', { day });
+    retryLinks();                                         // the backend answers: photos that didn't save go again (every 2 min a box)
     if (S.busy || S.sending.size) return;                 // a send is on its way: the next round sees its row with its box
     const gone = new Set(goneRows());
     for (const r of rows.slice().sort((a, c) => a.row - c.row)) {
@@ -1881,7 +1938,7 @@ async function syncDay() {
         const norm = v => caps(v).replace(/\s+/g, ' ');
         const changed = !mine.sentCells || sc.slice(0, 7).some((v, i) => norm(v) !== norm(mine.sentCells[i]));
         if (changed && !isDirty(mine) && !S.active.has(mine.id)) await patchBox(mine.id, x => { x.row = row; x.sentCells = sc; x.proof = proofFrom(row); });
-        if (mine.imported && JSON.stringify(mine.pics || []) !== JSON.stringify(r.pics || [])) await patchBox(mine.id, x => { x.pics = r.pics || []; });
+        if (mine.imported && S.linking !== mine.id && JSON.stringify(mine.pics || []) !== JSON.stringify(r.pics || [])) await patchBox(mine.id, x => { x.pics = r.pics || []; });   // (this phone saving them right now: its own new links come with the reply)
         continue;
       }
       if (gone.has(String(r.row))) continue;
@@ -1988,7 +2045,7 @@ $('#ppGo').addEventListener('click', () => {
   ppClose();
   if (b) printLabel(b, false, n, numbered, from, to);
 });
-const unlinked = () => allBoxes().filter(b => b.day === S.day && b.sheetRow && !b.photosLinked && b.photos.length && !LINK.q.includes(b.id) && S.linking !== b.id);
+const unlinked = () => allBoxes().filter(b => needsLink(b) && !LINK.q.includes(b.id) && S.linking !== b.id);   // every day: one of yesterday's is still offered today
 async function updateRows() {
   const list = dirtyBoxes(); if (!list.length || S.busy) return;
   S.busy = true; render();
@@ -2015,7 +2072,9 @@ async function updateRows() {
         const row = rowFromCells(out);
         if (row.contents !== x.row.contents) x.proof = proofFrom(row);
         x.row = row; x.sentCells = cells(x);
+        delete x.linkError;                            // photos that didn't save (say the row's tracking was just fixed) try afresh
       });
+      relink(b.id);
     }
     barMsg(`Updated ${list.length} row${list.length === 1 ? '' : 's'}`);
   } catch (e) { barMsg(''); notice(e.message, true); }
@@ -2073,7 +2132,9 @@ function cardHtml(b) {
   const st = vs === 'sent' ? `✓ Row ${b.sheetRow}` : STATUS_TEXT[vs];
   const watch = watchHits(b), rs = b.imported && vs === 'sent' ? [] : reasons(b);
   const noteChip = b.note ? [`<span class="chip note">NOTE: ${esc(b.note.length > 90 ? b.note.slice(0, 88) + '…' : b.note)}</span>`] : [];
-  const chips = [...watch.map(w => `<span class="chip bad">${esc(w)}</span>`), ...noteChip, ...b.flags.map(f => `<span class="chip flag">${esc(f)}</span>`), ...(ex ? b.badges.map(x => `<span class="chip">${esc(x)}</span>`) : [])].join('');
+  // Photos that didn't save stay marked on the folded card too, until they're in Drive.
+  const picChip = b.sheetRow && !b.wrongRow && !b.photosLinked && (b.linkError || linkBlocked(b)) ? [`<span class="chip bad">${linkBlocked(b) ? 'PHOTOS ONLY ON THIS PHONE' : 'PHOTOS NOT SAVED YET'}</span>`] : [];
+  const chips = [...watch.map(w => `<span class="chip bad">${esc(w)}</span>`), ...picChip, ...noteChip, ...b.flags.map(f => `<span class="chip flag">${esc(f)}</span>`), ...(ex ? b.badges.map(x => `<span class="chip">${esc(x)}</span>`) : [])].join('');
   let h = `<article class="card" data-id="${esc(b.id)}"><button type="button" class="card-top" data-act="toggle" aria-expanded="${ex}">
     <span class="no">#${b.seq}</span><span class="who"><b>${esc(row.customer || (vs === 'reading' ? 'Reading…' : 'Box ' + b.seq))}</b><span>${esc(sub)}</span></span>
     <span class="st ${vs}">${esc(st)}</span></button>`;
@@ -2117,7 +2178,14 @@ function cardHtml(b) {
   const m = b.read && b.read.ms;
   if (m) h += `<div class="muted">Read in ${(m.total / 1000).toFixed(1)} s after you finished the box${b.read.ahead ? ' (read ahead while shooting)' : ''} — sorting ${((m.sort || 0) / 1000).toFixed(1)} · reading + tracking check ${((m.read || 0) / 1000).toFixed(1)}` +
     ` · ${b.read.escalated ? 'medium, then high (something looked unsure)' : (b.read.effort || 'high') + ' effort'}${b.read.careful ? ' · careful model' : ''}</div>`;
-  if (b.sheetRow) h += `<div class="muted">✓ In the sheet at row ${b.sheetRow} · ${b.photosLinked ? 'photos linked in AV–BJ' : (S.linking === b.id || LINK.q.includes(b.id) ? 'saving photos…' : (b.linkError ? 'photos not saved yet — tap “Save photos” below' : 'photos waiting to save'))}.</div>`;
+  if (b.sheetRow) {
+    const n = b.photos.length, left = b.photosLeft != null ? b.photosLeft : b.imported ? 0 : Math.max(0, n - 15);   // (saved before this version: the first 15 went)
+    const pics = b.photosLinked ? (b.imported && !(b.pics || []).length ? 'no photos linked in AV–BJ' : 'photos linked in AV–BJ') + (left ? ` · ${left} more photo${left === 1 ? '' : 's'} only on this phone (the sheet links 15)` : '')
+      : linkBlocked(b) ? `${n} photo${n === 1 ? '' : 's'} only on this phone — older photos of this box were already cleared from this phone, so the app can’t add ${n === 1 ? 'it' : 'them'} to AV–BJ`
+      : S.linking === b.id || LINK.q.includes(b.id) ? 'saving photos…'
+      : b.linkError ? `photos not saved yet (${esc(b.linkError)}) — the app tries again by itself, or tap “Save photos” below` : 'photos not saved yet';
+    h += `<div class="muted">✓ In the sheet at row ${b.sheetRow} · ${pics}.</div>`;
+  }
   return h + `</div></article>`;
 }
 const sig = new Map();
@@ -2222,7 +2290,7 @@ $('#sendBtn').addEventListener('click', () => {
   const m = $('#sendBtn').dataset.mode;
   if (!m) return;
   $('#sendBtn').dataset.mode = ''; $('#sendBtn').disabled = true;     // one tap only: locked until this finishes
-  if (m === 'update') updateRows(); else if (m === 'photos') unlinked().forEach(b => queueLinks(b.id)); else planSend();
+  if (m === 'update') updateRows(); else if (m === 'photos') unlinked().forEach(b => { delete b.linkError; queueLinks(b.id); }); else planSend();   // a tap: full tries, and a notice if it still fails
 });
 $('#copyBtn').addEventListener('click', () => {
   const list = allBoxes().filter(b => b.day === S.day && (b.row.customer || b.row.tracking)).sort((a, b) => a.seq - b.seq);
@@ -2256,7 +2324,7 @@ document.addEventListener('click', e => {
       else planSend([b]);
       break;
     case 'resend':
-      patchBox(id, x => { x.sheetRow = null; x.sentCells = null; x.wrongRow = false; x.status = 'read'; x.ok = true; x.photosLinked = false; delete x.sendTry; })
+      patchBox(id, x => { x.sheetRow = null; x.sentCells = null; x.wrongRow = false; x.status = 'read'; x.ok = true; x.photosLinked = false; delete x.linkError; delete x.sendTry; })
         .then(() => planSend([S.boxes.get(id)]));
       break;
     case 'print': openPrintPrompt(b); break;
@@ -2327,11 +2395,12 @@ $('#lbMoveBtn').addEventListener('click', async () => {
   let to = $('#lbMove').value;
   if (to === '__new') to = (await newBox()).id;
   const p = S.photos.get(pid);
-  await patchBox(box, b => { b.photos = b.photos.filter(x => x !== pid); b.ok = false; });
+  await patchBox(box, b => { b.photos = b.photos.filter(x => x !== pid); b.ok = false; photosChanged(b); });
   p.box = to; await putPhoto(p);
-  await patchBox(to, b => { b.photos.push(pid); b.ok = false; });
+  await patchBox(to, b => { b.photos.push(pid); b.ok = false; photosChanged(b); });   // the list was made when the viewer opened: it may be in the sheet by now
   if (S.boxes.get(box).photos.length) queueRead(box);
   queueRead(to);
+  relink(box); relink(to);                            // a box in the sheet: AV–BJ follows the move
 });
 $('#lbKind').addEventListener('click', async () => {
   if (!S.lb || !S.lb.box) return;
@@ -2343,8 +2412,9 @@ $('#lbDel').addEventListener('click', async () => {
   if (!S.lb || !S.lb.box) return;
   const { pid, box } = S.lb; closeLb();
   S.photos.delete(pid); await delPhoto(pid);          // off the phone first: nothing can write it back, and no box list outlives it
-  await patchBox(box, b => { b.photos = b.photos.filter(x => x !== pid); b.ok = false; });
+  await patchBox(box, b => { b.photos = b.photos.filter(x => x !== pid); b.ok = false; photosChanged(b); });
   if (S.boxes.get(box).photos.length) queueRead(box); else render();
+  relink(box);                                        // a box in the sheet: AV–BJ without it
 });
 
 /* settings */
@@ -2468,20 +2538,34 @@ async function showDevices() {
 }
 $('#devListBtn').addEventListener('click', showDevices);
 $('#purgeBtn').addEventListener('click', async () => {
-  const cutoff = Date.now() - 7 * 86400000; let n = 0;
+  const cutoff = Date.now() - 7 * 86400000; let n = 0, kept = 0;
   for (const b of allBoxes()) {
-    if (!b.sheetRow || !b.photosLinked || b.createdAt > cutoff) continue;   // only photos already saved to Drive
-    for (const pid of b.photos) { await delPhoto(pid); S.photos.delete(pid); n++; }
-    b.photos = []; await putBox(b);
+    if (!b.sheetRow || b.createdAt > cutoff) continue;
+    // Only photos known to be in Drive leave the phone: the ones its last photo save sent (AV–BJ links 15), copies of
+    // another phone's Drive photos, or — saved before this version — all of them when there were no more than 15 and
+    // none was taken after the box went to the sheet (that one may never have gone). Any other photo stays.
+    const late = b.photos.some(pid => ((S.photos.get(pid) || {}).t || 0) > (b.sentAt || Infinity));
+    const inDrive = new Set(!b.photosLinked || b.wrongRow ? [] : b.savedIds ? b.savedIds
+      : b.imported ? b.photos.filter(pid => (S.photos.get(pid) || {}).src === 'drive')
+      : b.photos.length <= 15 && !late ? b.photos : []);
+    const gone = b.photos.filter(pid => inDrive.has(pid)), keep = b.photos.filter(pid => !inDrive.has(pid));
+    kept += keep.length;
+    if (!gone.length) continue;
+    // Another phone's box: its photos load from Drive again when needed. Own box: its AV–BJ keeps the cleared ones, so it
+    // is never rewritten without them (linkBlocked). Photos and box in one step: never a list naming cleared photos.
+    const mark = b.imported ? { photos: keep, picsDone: [] } : { photos: keep, purged: { row: +b.sheetRow, keep: keep.slice() } };
+    try { await txBoth((ps, bs) => { for (const pid of gone) ps.delete(pid); bs.put(Object.assign({}, b, mark)); }); } catch (e) { continue; }
+    Object.assign(b, mark); for (const pid of gone) S.photos.delete(pid); n += gone.length;
   }
-  $('#storeInfo').textContent = `Deleted ${n} photo${n === 1 ? '' : 's'}.`; render();
+  $('#storeInfo').textContent = `Deleted ${n} photo${n === 1 ? '' : 's'}.` + (kept ? ` Kept ${kept} that ${kept === 1 ? 'isn’t' : 'aren’t'} saved to Drive.` : ''); render();
 });
 
 /* ================= boot ================= */
 /* A photo saved with its box but listed by no box (the app was closed halfway through saving it, before photos and
    boxes were saved together): it goes back into its box, in shooting order. A box not in the sheet yet is read again;
-   one already in the sheet saves its photos to Drive again, this one with them. Its box is gone: it waits to be
-   sorted. A photo removed on purpose is off the phone before any box forgets it, so it never comes back. */
+   one already in the sheet saves its photos to Drive again, this one with them (another phone's box too, once all of
+   its Drive photos are here). Its box is gone: it waits to be sorted. A photo removed on purpose is off the phone
+   before any box forgets it, so it never comes back. */
 async function repairStrays() {
   const listed = new Set(), fixed = new Set();
   for (const b of S.boxes.values()) for (const id of b.photos || []) listed.add(id);
@@ -2491,9 +2575,19 @@ async function repairStrays() {
     if (!b) { p.box = null; await putPhoto(p); continue; }
     b.photos.push(p.id); fixed.add(b);
     if (!b.sheetRow) { b.status = 'new'; b.ok = false; if (b.id !== S.current && !(S.resume || []).includes(b)) S.resume = (S.resume || []).concat(b); }
-    else if (!b.imported) b.photosLinked = false;      // another phone's row keeps its own Drive photos
+    else photosChanged(b);                             // saved to Drive at start-up (retryLinks)
   }
   for (const b of fixed) await putBox(b);
+}
+/* The purge before this version left no mark on the boxes it cleared (all their photos gone): an own box keeps its
+   AV–BJ as it is (a photo added later stays on this phone), another phone's box loads its Drive photos again when
+   they're needed. */
+async function markOldPurges() {
+  for (const b of S.boxes.values()) {
+    if (!b.sheetRow || !b.photosLinked || b.savedIds || b.purged || b.photos.length || b.createdAt > Date.now() - 7 * 86400000) continue;
+    if (!b.imported) b.purged = { row: +b.sheetRow, keep: [] }; else if ((b.picsDone || []).length) b.picsDone = []; else continue;
+    await putBox(b);
+  }
 }
 (async () => {
   render();                                            // draw immediately; saved boxes fill in a moment later
@@ -2503,6 +2597,7 @@ async function repairStrays() {
     for (const b of boxes) { if (b.status === 'reading' || b.status === 'queued') { b.status = 'new'; S.resume = (S.resume || []).concat(b); } S.boxes.set(b.id, b); }
     trkIdx = null;
   } catch (e) { notice('This phone’s storage couldn’t be opened. Photos won’t be kept.', true); }
+  try { await markOldPurges(); } catch (e) { /* tried again at the next start */ }
   try { await repairStrays(); } catch (e) { /* tried again at the next start */ }
   try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch (e) {}
   render();
@@ -2512,7 +2607,7 @@ async function repairStrays() {
     // Reads cut off when the app was closed pick up again by themselves, in box order.
     for (const b of (S.resume || []).filter(x => !x.sheetRow && x.photos.length).sort((a, c) => (a.createdAt || 0) - (c.createdAt || 0))) queueRead(b.id);
     autoSend();
-    allBoxes().filter(b => b.sheetRow && !b.photosLinked && b.photos.length && !b.linkError).forEach(b => queueLinks(b.id));   // photos cut off by closing the app
+    retryLinks(true);                                  // photos cut off by closing the app, or that didn't save (any day)
     warmCache();
     syncDay();
   }
