@@ -509,6 +509,20 @@ async function tx(store, mode, fn) {
     t.onabort = () => rej(t.error);
   });
 }
+/* One transaction over both stores: a photo and the box that lists it are saved together or not at all, so an app
+   closed halfway (or a phone out of space) never leaves a photo that no box shows. */
+async function txBoth(fn) {
+  const d = await idb();
+  return new Promise((res, rej) => {
+    const t = d.transaction(['photos', 'boxes'], 'readwrite');
+    t.oncomplete = () => res();
+    t.onerror = () => rej(t.error);
+    t.onabort = () => rej(t.error);
+    try { fn(t.objectStore('photos'), t.objectStore('boxes')); } catch (e) { try { t.abort(); } catch (e2) {} rej(e); }
+  });
+}
+const isFull = e => !!e && (e.name === 'QuotaExceededError' || /quota/i.test(e.message || ''));   // the phone's storage for the app is full
+const FULL_MSG = 'Phone storage is full — that photo was NOT saved. Settings → Delete photos of boxes already in the sheet.';
 const reqP = r => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
 const putPhoto = p => tx('photos', 'readwrite', s => { s.put(p); });
 const delPhoto = id => tx('photos', 'readwrite', s => { s.delete(id); });
@@ -526,7 +540,8 @@ const S = {
   autoSend: ls.get('autoSend') !== '0', alwaysHigh: ls.get('alwaysHigh') === '1', autoPrint: ls.get('autoPrint') === '1', noTotals: ls.get('noTotals') === '1',
   autoPrintN: Math.min(20, Math.max(1, parseInt(ls.get('autoPrintN'), 10) || 1)), pp: null,
   nextRowSeen: +ls.get('nextRowSeen') || 0,
-  bv: 0, sortP: new Map(), held: new Set(), sending: new Set(), linking: null, printing: new Set()
+  bv: 0, sortP: new Map(), held: new Set(), sending: new Set(), linking: null, printing: new Set(),
+  saving: 0, ending: 0                               // photos on their way into a box; taps that end the box in progress, waiting for them
 };
 const photoUrl = id => {
   if (S.urls.has(id)) return S.urls.get(id);
@@ -866,7 +881,7 @@ async function shotTime(file) {
 const CAM = { stream: null, track: null, ic: null, torch: false, split: false, n: 0, queue: Promise.resolve(), target: null, boxNo: 1 };
 async function openCamera(targetBoxId) {
   CAM.target = targetBoxId || null; CAM.split = false; CAM.n = 0;
-  CAM.boxNo = 1;
+  CAM.boxNo = 1; CAM.lost = 0; CAM.lostFull = false; clearTimeout(CAM.msgT);
   $('#cam').hidden = false; $('#camStrip').innerHTML = ''; $('#camCount').textContent = '0';
   $('#camBox').textContent = targetBoxId ? `BOX #${S.boxes.get(targetBoxId)?.seq || ''}` : 'BOX 1';
   $('#newBoxBtn').hidden = !!targetBoxId;
@@ -912,49 +927,68 @@ function closeCamera() {
 /* Each shot is a real camera photo (full resolution, the phone's own focus, sharpening and noise
    cleanup), not a frame of the live preview, which is small and grainy. Shots are taken one after
    another so fast tapping can't make the camera refuse; if a still takes too long or fails, the
-   preview frame is used for that one shot instead. */
+   preview frame copied AT THE TAP is used for that one shot instead (never a frame from seconds later,
+   when the lens is already on the next package). */
 CAM.stillQ = Promise.resolve();
-function grab() {
+function grab(snap, tapAt) {
   const job = CAM.stillQ.then(async () => {
-    if (S.sharp && CAM.ic && CAM.track && CAM.track.readyState === 'live') {
+    // A still that would only start 3 s after its tap (stuck behind a slow one) would show wherever the lens is now.
+    if (S.sharp && CAM.ic && CAM.track && CAM.track.readyState === 'live' && performance.now() - tapAt < 3000) {
       try {
         const ps = Object.assign({}, CAM.photoSettings || {});
         if ((CAM.fillModes || []).includes('off') && !CAM.torch) ps.fillLightMode = 'off';
         const still = CAM.ic.takePhoto(Object.keys(ps).length ? ps : undefined);
         const blob = await Promise.race([still, new Promise((_, rej) => setTimeout(() => rej(new Error('slow')), 3000))]);
-        if (blob && blob.size) return blob;
-      } catch (e) {}
+        if (blob && blob.size) { snap.then(bm => bm && bm.close && bm.close()); return blob; }
+      } catch (e) { if (e && e.message === 'slow') CAM.ic = null; }   // the camera is stuck: preview frames, at once, until it is opened again
     }
-    return frameGrab();
+    return frameGrab(await snap);
   });
   CAM.stillQ = job.catch(() => {});
   return job;
 }
-function frameGrab() {
-  const v = $('#video');
-  if (!v.videoWidth) throw new Error('no frame');
-  const c = document.createElement('canvas'); c.width = v.videoWidth; c.height = v.videoHeight;
-  c.getContext('2d').drawImage(v, 0, 0);
+function frameGrab(bm) {                                // the frame copied at the tap (without one: the preview as it is now)
+  const v = $('#video'), w = bm ? bm.width : v.videoWidth, h = bm ? bm.height : v.videoHeight;
+  if (!w) throw new Error('no frame');
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  c.getContext('2d').drawImage(bm || v, 0, 0);
+  if (bm && bm.close) bm.close();
   return new Promise((res, rej) => c.toBlob(b => b ? res(b) : rej(new Error('frame')), 'image/jpeg', 0.92));
 }
+/* A shot that couldn't be saved is never dropped quietly: the camera says so at once (with an error buzz), and the
+   main screen says it again when the camera closes. */
+function camLost(e) {
+  const full = isFull(e), m = $('#camMsg'), txt = full ? FULL_MSG : 'That photo was NOT saved — take it again';
+  CAM.lost++; if (full) CAM.lostFull = true;
+  m.textContent = txt; m.hidden = false;
+  clearTimeout(CAM.msgT); CAM.msgT = setTimeout(() => { if (m.textContent === txt) m.hidden = true; }, 5000);
+  try { navigator.vibrate && navigator.vibrate([200, 100, 200]); } catch (e2) {}
+}
+function camLostNotice() {
+  const n = CAM.lost; if (!n) return;
+  notice(CAM.lostFull ? `Phone storage is full — ${n} camera photo${n === 1 ? ' was' : 's were'} NOT saved. Settings → Delete photos of boxes already in the sheet.`
+    : `${n} camera photo${n === 1 ? ' was' : 's were'} NOT saved — take ${n === 1 ? 'it' : 'them'} again.`, true);
+}
 function shoot() {
-  if (!CAM.stream) return;
-  const t = Date.now(), split = CAM.split; CAM.split = false;
+  const v = $('#video');
+  if (!CAM.stream || !v.videoWidth) return;              // no picture yet (camera still starting): not a photo — no flash, no count
+  const t = Date.now(), tapAt = performance.now(), split = CAM.split; CAM.split = false;
   const f = $('#flash'); f.classList.add('go'); requestAnimationFrame(() => requestAnimationFrame(() => f.classList.remove('go')));
   try { navigator.vibrate && navigator.vibrate(20); } catch (e) {}
+  const k = Math.min(1, 2400 / Math.max(v.videoWidth, v.videoHeight));   // the preview as it is at this tap (at most photo size)
+  const snap = createImageBitmap(v, k < 1 ? { resizeWidth: Math.round(v.videoWidth * k), resizeHeight: Math.round(v.videoHeight * k), resizeQuality: 'low' } : undefined).catch(() => null);
   CAM.n++; $('#camCount').textContent = String(CAM.n);
   const slot = document.createElement('span'); slot.className = 'thumb'; $('#camStrip').append(slot); slot.scrollIntoView({ inline: 'end' });
-  const raw = grab();                                   // grab this frame now; store it in the background
+  const raw = grab(snap, tapAt);                        // the still now (or the frame from the tap); stored in the background
   CAM.queue = CAM.queue.then(async () => {
     try {
       const { blob, w, h } = await scaleTo(await raw, 2400, 0.9);
-      const p = { id: uid(), t, blob, w, h, split, box: CAM.target || null, kind: null, src: 'camera' };
-      await putPhoto(p); S.photos.set(p.id, p);
+      const p = { id: uid(), t, blob, w, h, split, box: null, kind: null, src: 'camera' };
+      await attachToBox(CAM.target || await currentBox(), [p]);   // saved once, together with its box
       slot.innerHTML = `<img src="${esc(photoUrl(p.id))}" alt="">` + (split ? '<span class="tag cut">NEW</span>' : '');
-      await attachToBox(CAM.target || await currentBox(), [p]);
       preSort(p);                                             // Claude (Haiku) tags it label / inside right away
       camBoxLabel();
-    } catch (e) { slot.remove(); CAM.n--; $('#camCount').textContent = String(CAM.n); }
+    } catch (e) { slot.remove(); CAM.n--; $('#camCount').textContent = String(CAM.n); camLost(e); }
   });
 }
 /* ONE BOX AT A TIME: every photo goes into the current box, label and contents in any order.
@@ -979,6 +1013,21 @@ function finishCurrent() {
   if (b && b.photos.length && !b.sheetRow) queueRead(b.id);
   S.current = null; ls.set('curBox', '');
   render(); camBoxLabel();
+}
+/* ONE queue, in the order things happen, for every photo that comes from outside the page (the phone's camera app,
+   the gallery, the Android app's camera) and for every tap that ends the box in progress: a photo that arrived
+   before the tap goes into that box and is in its read, one that arrives after it starts the next box. */
+let nativeQ = Promise.resolve();
+const photoJob = fn => (nativeQ = nativeQ.then(fn).catch(() => {}));
+/* Ending the box in progress (Finish, Read again or Send to sheet on its card, the camera's NEXT BOX, DONE and Close)
+   runs once every photo already on its way is in its box; QUICK CAM shots tapped after it wait for it in turn.
+   finishCurrent itself never waits: the Android app's NEXT BOX and DONE already run inside the queue. */
+function afterPhotos(fn) {
+  const camQ = CAM.queue;
+  S.ending++; render();
+  const job = photoJob(async () => { try { await camQ; await fn(); } finally { S.ending--; render(); } });
+  CAM.queue = CAM.queue.then(() => job);
+  return job;
 }
 /* "Tell Claude about this box" on the box in progress. The note is the box's b.note (the same as "Note for Claude"
    on its card). It is saved as you type, goes into every read of the box (label, contents, full read), and when it
@@ -1019,92 +1068,139 @@ $('#camBtn').addEventListener('click', () => {
 });
 $('#shutter').addEventListener('click', shoot);
 $('#video').addEventListener('click', shoot);
-$('#newBoxBtn').addEventListener('click', async () => { await CAM.queue; finishCurrent(); });
+$('#newBoxBtn').addEventListener('click', () => afterPhotos(finishCurrent));
 $('#torchBtn').addEventListener('click', async () => {
   if (!CAM.track) return;
   CAM.torch = !CAM.torch;
   try { await CAM.track.applyConstraints({ advanced: [{ torch: CAM.torch }] }); $('#torchBtn').classList.toggle('on', CAM.torch); } catch (e) { CAM.torch = false; }
 });
-$('#camClose').addEventListener('click', async () => { await CAM.queue; closeCamera(); render(); });
-$('#camDone').addEventListener('click', async () => {
+$('#camClose').addEventListener('click', () => {
   const target = CAM.target;
-  await CAM.queue; closeCamera(); render();
-  if (target) { releaseCurrent(target); queueRead(target); }   // + Camera on the box in progress: DONE finishes it too
-  else finishCurrent();
+  afterPhotos(() => {
+    const shot = CAM.n > 0; closeCamera(); render();
+    // + Camera on a card: its new photos are read now, as with DONE (the box in progress is read when it's finished).
+    if (target && shot && target !== S.current) queueRead(target);
+    camLostNotice(); autoSend();
+  });
+});
+$('#camDone').addEventListener('click', () => {
+  const target = CAM.target;
+  afterPhotos(() => {
+    closeCamera(); render();
+    if (target) { releaseCurrent(target); queueRead(target); }   // + Camera on the box in progress: DONE finishes it too
+    else finishCurrent();
+    camLostNotice();
+  });
 });
 document.addEventListener('keydown', e => { if (!$('#cam').hidden && (e.key === ' ' || e.key === 'Enter' || e.key === 'AudioVolumeUp' || e.key === 'AudioVolumeDown')) { e.preventDefault(); shoot(); } });
 
 /* ================= phone camera (the phone's own camera app: same quality as normal photos) =================
    Opens Samsung's (or any phone's) camera app for one shot; the photo comes straight back into the
-   CURRENT box, is saved on the phone first, then sorted and read ahead like an in-app shot. */
-$('#nativeCam').addEventListener('change', async e => {
+   CURRENT box, is saved on the phone first, then sorted and read ahead like an in-app shot.
+   It is saved in the photo queue, in arrival order: a Finish tapped meanwhile waits for it. */
+$('#nativeCam').addEventListener('change', e => {
   const files = [...(e.target.files || [])]; e.target.value = '';
   if (!files.length) return;                                         // camera closed without a photo
   showProg('Saving photo…');
-  try {
-    const boxId = await currentBox();
-    for (const f of files) {
-      const t = (await shotTime(f)) || Date.now();
-      const { blob, w, h } = await scaleTo(f, 2400, 0.92);
-      const p = { id: uid(), t, blob, w, h, split: false, box: boxId, kind: null, src: 'phone' };
-      await putPhoto(p); S.photos.set(p.id, p);
-      await attachToBox(boxId, [p]);
-      preSort(p);                                                    // label / inside, then read ahead
-    }
-    const b = S.boxes.get(boxId);
-    showProg(`Box #${b ? b.seq : ''}: ${b ? b.photos.length : ''} photo${b && b.photos.length === 1 ? '' : 's'} — tap + NEXT PHOTO, or “Finish this box” when it’s complete.`);
-  } catch (err) {
-    showProg('');
-    notice(/hei[cf]/i.test(files.map(f => f.type + f.name).join(' ')) ? 'That photo is HEIC. In the Samsung camera settings turn off “High efficiency pictures”, then try again.' : 'That photo couldn’t be saved. Take it again.', true);
-  }
-  render();
+  S.saving += files.length; render();                               // counted the moment it arrives
+  photoJob(async () => {
+    let left = files.length;
+    try {
+      const boxId = await currentBox();
+      for (const f of files) {
+        try {
+          const t = (await shotTime(f)) || Date.now();
+          const { blob, w, h } = await scaleTo(f, 2400, 0.92);
+          const p = { id: uid(), t, blob, w, h, split: false, box: boxId, kind: null, src: 'phone' };
+          await attachToBox(boxId, [p]);                              // saved once, together with its box
+          preSort(p);                                                // label / inside, then read ahead
+        } finally { S.saving--; left--; }
+      }
+      const b = S.boxes.get(boxId);
+      showProg(`Box #${b ? b.seq : ''}: ${b ? b.photos.length : ''} photo${b && b.photos.length === 1 ? '' : 's'} — tap + NEXT PHOTO, or “Finish this box” when it’s complete.`);
+    } catch (err) {
+      showProg('');
+      notice(isFull(err) ? FULL_MSG : /hei[cf]/i.test(files.map(f => f.type + f.name).join(' ')) ? 'That photo is HEIC. In the Samsung camera settings turn off “High efficiency pictures”, then try again.' : 'That photo couldn’t be saved. Take it again.', true);
+    } finally { S.saving -= left; }
+    render();
+  });
 });
 
 /* ================= native Android app bridge =================
    Inside the 700 Intake Android app, the camera is native (the phone's own processing). Each photo
-   arrives here as soon as it's saved and goes into the CURRENT box, in order; NEXT BOX and DONE
-   finish the box exactly like the buttons here do. */
-let nativeQ = Promise.resolve();
+   arrives here as soon as it's saved and goes into the CURRENT box, in order (the photo queue); NEXT BOX
+   and DONE finish the box exactly like the buttons here do. */
 window.__nativeShot = url => {
   paceTick();                                                          // work meter: a photo is work
-  nativeQ = nativeQ.then(async () => {
+  S.saving++; render();
+  photoJob(async () => {
+    let boxId = null;
     try {
-      const r = await fetch(url, { cache: 'no-store' });
-      if (!r.ok) throw new Error('missing');
-      const raw = await r.blob();
-      const boxId = await currentBox();
-      const { blob, w, h } = await scaleTo(raw, 2400, 0.92);
-      const p = { id: uid(), t: Date.now(), blob, w, h, split: false, box: boxId, kind: null, src: 'native' };
-      await putPhoto(p); S.photos.set(p.id, p);
-      await attachToBox(boxId, [p]);
+      // A file still being written, or a decode that fails once: read it again, up to 3 tries (about 0.6 s, then
+      // 1.2 s apart). Nothing is saved before the picture is in hand, so a photo is never saved twice.
+      let img = null;
+      for (const wait of [0, 600, 1200]) {
+        if (wait) await new Promise(res => setTimeout(res, wait));
+        const ac = new AbortController(), tm = setTimeout(() => ac.abort(), 10000);   // a file that never comes can't hold up the queue (and Finish)
+        try { const r = await fetch(url, { cache: 'no-store', signal: ac.signal }); if (!r.ok) throw new Error('missing'); img = await scaleTo(await r.blob(), 2400, 0.92); break; } catch (e) {}
+        finally { clearTimeout(tm); }
+      }
+      boxId = await currentBox();
+      if (!img) throw new Error('missing');
+      const p = { id: uid(), t: Date.now(), blob: img.blob, w: img.w, h: img.h, split: false, box: boxId, kind: null, src: 'native' };
+      await attachToBox(boxId, [p]);                                 // saved once, together with its box
       preSort(p);                                                    // label / inside, then read ahead
-      render();
-    } catch (e) { notice('A photo from the camera couldn’t be saved. Take it again.', true); }
+    } catch (e) {
+      // The notice sits behind the native camera and the next "✓ in the sheet" replaces it, so the box itself says
+      // it too: it waits on Check (never sent by itself) until the photo is taken again.
+      let seq = '';
+      try { const id = boxId || await currentBox(); await patchBox(id, x => { x.lostShots = (x.lostShots || 0) + 1; x.ok = false; }); seq = (S.boxes.get(id) || {}).seq || ''; } catch (e2) {}
+      notice((seq ? `Box #${seq}: ` : '') + (isFull(e) ? 'Phone storage is full — a camera photo was NOT saved. Settings → Delete photos of boxes already in the sheet.'
+        : `A photo from the camera didn’t arrive. Retake it with + Camera${seq ? ` on box #${seq}` : ''}.`), true);
+      try { if (window.AndroidIntake && typeof window.AndroidIntake.shotFailed === 'function') window.AndroidIntake.shotFailed(String(url)); } catch (e2) {}
+    } finally { S.saving--; render(); }
   });
 };
-window.__nativeNextBox = () => { paceTick(); nativeQ = nativeQ.then(() => finishCurrent()); };
-window.__nativeDone = () => { paceTick(); nativeQ = nativeQ.then(() => { finishCurrent(); render(); }); };
+/* NEXT BOX / DONE in the Android camera never cut off a note being typed: they wait until the operator leaves the
+   note box (at most a minute), so the whole note goes with the box. */
+function noteLeft() {
+  const ta = $('#curNote');
+  if (document.activeElement !== ta || !S.current || ta.dataset.box !== S.current) return Promise.resolve();
+  return new Promise(res => { const t = setTimeout(res, 60000); ta.addEventListener('blur', () => { clearTimeout(t); res(); }, { once: true }); });
+}
+window.__nativeNextBox = () => { paceTick(); photoJob(() => noteLeft().then(() => finishCurrent())); };
+window.__nativeDone = () => { paceTick(); photoJob(() => noteLeft().then(() => { finishCurrent(); render(); })); };
 window.__isNativeApp = !!window.AndroidIntake;
 
-/* ================= gallery import ================= */
-$('#pickAll').addEventListener('change', async e => {
+/* ================= gallery import =================
+   One job in the photo queue: it picks its box first and puts each photo into it as soon as it is saved, so photos
+   being imported never show as "waiting to be sorted", and a Finish tapped meanwhile waits for all of them. */
+$('#pickAll').addEventListener('change', e => {
   const files = [...(e.target.files || [])]; e.target.value = '';
   if (!files.length) return;
   showProg(`Saving ${files.length} photo${files.length === 1 ? '' : 's'}…`);
-  const metas = await Promise.all(files.map(async (f, i) => ({ f, i, t: await shotTime(f) })));
-  const ordered = metas.every(m => m.t != null) ? [...metas].sort((a, b) => (a.t - b.t) || (a.i - b.i)) : metas;
-  const base = Date.now(), added = [];
-  for (let k = 0; k < ordered.length; k++) {
-    const m = ordered[k];
+  S.saving += files.length; render();
+  photoJob(async () => {
+    let left = files.length, boxId = null, n = 0;
     try {
-      const { blob, w, h } = await scaleTo(m.f, 2400, 0.9);
-      const p = { id: uid(), t: m.t || base + k, blob, w, h, split: false, box: null, kind: null, src: 'gallery' };
-      await putPhoto(p); S.photos.set(p.id, p); added.push(p);
-    } catch (err) { notice(/hei[cf]/i.test(m.f.type + m.f.name) ? 'A HEIC photo was skipped. Set the camera to JPEG.' : 'One photo couldn’t be opened and was skipped.', true); }
-  }
-  if (added.length) { await attachToBox(await currentBox(), added); added.forEach(preSort); }   // all into THIS box
-  showProg(`${added.length} photo${added.length === 1 ? '' : 's'} added to box #${S.boxes.get(S.current)?.seq ?? ''}. Tap “Finish this box” when it’s complete.`);
-  render();
+      const metas = await Promise.all(files.map(async (f, i) => ({ f, i, t: await shotTime(f) })));
+      const ordered = metas.every(m => m.t != null) ? [...metas].sort((a, b) => (a.t - b.t) || (a.i - b.i)) : metas;
+      boxId = await currentBox();                                    // all into THIS box
+      const base = Date.now();
+      for (let k = 0; k < ordered.length; k++) {
+        const m = ordered[k];
+        try {
+          const { blob, w, h } = await scaleTo(m.f, 2400, 0.9);
+          const p = { id: uid(), t: m.t || base + k, blob, w, h, split: false, box: boxId, kind: null, src: 'gallery' };
+          await attachToBox(boxId, [p]); preSort(p); n++;
+        } catch (err) { notice(isFull(err) ? FULL_MSG : /hei[cf]/i.test(m.f.type + m.f.name) ? 'A HEIC photo was skipped. Set the camera to JPEG.' : 'One photo couldn’t be opened and was skipped.', true); }
+        finally { S.saving--; left--; render(); }
+      }
+    } catch (err) { notice(isFull(err) ? FULL_MSG : 'Those photos couldn’t be saved. Try again.', true); }
+    finally { S.saving -= left; }
+    showProg(boxId ? `${n} photo${n === 1 ? '' : 's'} added to box #${S.boxes.get(boxId)?.seq ?? ''}. Tap “Finish this box” when it’s complete.` : '');
+    render();
+  });
 });
 
 /* ================= sorting into boxes ================= */
@@ -1151,12 +1247,31 @@ async function newBox() {
   await saveBox(b);
   return b;
 }
+/* Still being shot: the box in progress, or the card the camera is open on. Its photos are read when that ends. */
+const shooting = id => id === S.current || !!(CAM.stream && CAM.target === id);
+/* Photos go into their box: each photo (written once, with its box) and the box's list are saved in ONE transaction.
+   A box deleted meanwhile: the photos wait to be sorted instead. Not saved (phone full): nothing here changes either,
+   and the caller's message is true. */
 async function attachToBox(boxId, photos) {
-  for (const p of photos) { p.box = boxId; await putPhoto(p); }
-  await patchBox(boxId, b => {
-    for (const p of photos) if (!b.photos.includes(p.id)) b.photos.push(p.id);
-    if (b.status !== 'sent') { b.status = 'new'; b.ok = false; }
-  });
+  const b = boxId && S.boxes.get(boxId), had = photos.map(p => [p, p.box, S.photos.has(p.id)]);
+  const undo = () => { for (const [p, box, was] of had) { p.box = box; if (!was) S.photos.delete(p.id); } };
+  if (!b) {
+    for (const p of photos) { p.box = null; S.photos.set(p.id, p); }
+    try { await txBoth(ps => { for (const p of photos) ps.put(p); }); } catch (e) { undo(); render(); throw e; }
+    render(); return;
+  }
+  const was = { ids: new Set(b.photos), status: b.status, ok: b.ok };
+  for (const p of photos) { p.box = boxId; S.photos.set(p.id, p); if (!b.photos.includes(p.id)) b.photos.push(p.id); }
+  if (b.status !== 'sent') { b.status = 'new'; b.ok = false; }
+  b.updatedAt = Date.now(); trkIdx = null; paceDirty();
+  try { await txBoth((ps, bs) => { for (const p of photos) ps.put(p); bs.put(b); }); }
+  catch (e) {
+    b.photos = b.photos.filter(id => was.ids.has(id) || !photos.some(p => p.id === id));
+    if (b.status === 'new' && !b.ok) { b.status = was.status; b.ok = was.ok; }
+    undo(); render(); throw e;
+  }
+  render();
+  if (!shooting(boxId)) queueRead(boxId);            // a photo for a finished box is read with it (a read under way reads it again)
 }
 let sorting = false;
 async function sortPending() {
@@ -1176,8 +1291,10 @@ async function sortPhotos(list) {
   const undecided = list.filter(p => !p.kind);
   if (undecided.length) {
     const kinds = await classify(undecided.map(p => p.blob));
-    undecided.forEach((p, i) => { p.kind = kinds[i].kind; p.trk4 = kinds[i].trk4; p.lbox = kinds[i].box; });
+    undecided.forEach((p, i) => { if (p.kind || p.box || !S.photos.has(p.id)) return; p.kind = kinds[i].kind; p.trk4 = kinds[i].trk4; p.lbox = kinds[i].box; });
   }
+  list = list.filter(p => !p.box && S.photos.has(p.id));   // one that got its box (or was removed) while sorting stays where it is: never in two boxes
+  if (!list.length) { render(); return; }
   {
     const groups = []; let g = null;
     for (const p of list) {
@@ -1242,9 +1359,18 @@ function pump() {
   readProg(); render();
 }
 async function readBox(id, opts) {
-  const b0 = S.boxes.get(id); if (!b0) return;
+  let b0 = S.boxes.get(id); if (!b0) return;
+  // Another phone's box: its photos come from Drive while its card is open. Read it only with all of them here, never
+  // a part (a shorter contents list would then go over the sheet's).
+  if (picsMissing(b0)) {
+    await loadPics(b0);
+    b0 = S.boxes.get(id); if (!b0) return;
+    if (picsMissing(b0)) { await patchBox(id, b => { b.readError = 'Some photos of this box haven’t loaded from Drive yet. Tap Read again in a moment.'; }); return; }
+  }
   const ph = b0.photos.map(pid => S.photos.get(pid)).filter(Boolean);
   if (!ph.length) return;
+  const used = new Set(ph.map(p => p.id));             // the photos this read sees: one that comes in meanwhile is read too (see the end)
+  const unseen = b => b.photos.some(pid => S.photos.has(pid) && !used.has(pid));
   if (!S.cfg.url || !S.cfg.token) { await patchBox(id, b => { if (!b.sheetRow) b.status = 'new'; }); return; }   // not linked: the photos wait, read when it is
   const T0 = performance.now(), ms = {};
   S.readStart.set(id, Date.now());
@@ -1260,6 +1386,7 @@ async function readBox(id, opts) {
     try {
       const kinds = await classify(undecided.map(p => p.blob));
       for (let i = 0; i < undecided.length; i++) {
+        if (undecided[i].kind || !S.photos.has(undecided[i].id)) continue;   // set by hand (or removed) while this sort ran
         Object.assign(undecided[i], { kind: kinds[i].kind, trk4: kinds[i].trk4, lbox: kinds[i].box });
         await putPhoto(undecided[i]);
       }
@@ -1331,13 +1458,15 @@ async function readBox(id, opts) {
       b.badges = [...new Set((Array.isArray(res.badges) ? res.badges : []).map(caps).filter(Boolean))];
       b.read = { at: Date.now(), effort: escalated ? 'high' : first, escalated, careful, ahead: !!r.ahead, labelPhoto: parseInt(res.label_photo, 10) || null, weightPrinted: wp, unit: res.weight_unit || '', verify, ms, note: noteUsed };
       b.readError = ''; b.ok = false;
-      if (b.status !== 'sent') b.status = 'read';
+      if (b.status !== 'sent') b.status = unseen(b) ? 'new' : 'read';   // holds a photo this read didn't see: not read yet
     });
   } catch (e) {
     await patchBox(id, b => { if (b.status !== 'sent') b.status = 'error'; b.readError = e.message || 'Reading failed. Tap Read again.'; });
   }
   const now = S.boxes.get(id);
-  return !!(now && !now.sheetRow && (now.note || '') !== noteUsed);   // true: read it again with the new note
+  // true: read it again before it can be sent — the note changed, or a photo came in that this read didn't see
+  // (a box still being shot is read when that ends).
+  return !!(now && !now.sheetRow && ((now.note || '') !== noteUsed || (!shooting(id) && unseen(now))));
 }
 /* One full read at one effort level. The main read, the extra contents photos and the independent
    tracking check all run AT THE SAME TIME, so the check adds no waiting. */
@@ -1496,6 +1625,7 @@ function reasons(b) {
   const r = [], row = b.row;
   const ph = b.photos.map(id => S.photos.get(id)).filter(Boolean);
   if (!b.imported && !ph.some(p => p.kind === 'label')) r.push('No label photo — add one or type the row.');
+  if (b.lostShots) r.push(`${b.lostShots} camera photo${b.lostShots === 1 ? '' : 's'} didn’t arrive — retake ${b.lostShots === 1 ? 'it' : 'them'} with + Camera, then tap “Looks good”.`);
   if (!row.tracking) r.push('No tracking number.');
   else if (/NOT IN FRAME|\?/.test(row.tracking)) r.push('Tracking not fully readable — reshoot or type it.');
   if (b.read && b.read.verify && !b.read.verify.match && b.read.verify.by !== 'barcode' && b.read.verify.by !== 'note' && !(b.edited || {}).tracking) r.push(`Tracking read two ways: ${b.read.verify.first} / ${b.read.verify.second || '—'}. Check the label.`);
@@ -1545,7 +1675,7 @@ async function loadWatch() {
 }
 
 /* ================= sending ================= */
-const sendable = () => allBoxes().filter(b => b.day === S.day && !b.sheetRow && b.id !== S.current && viewStatus(b) === 'ready').sort((a, b) => a.seq - b.seq);   // never the box still being shot
+const sendable = () => allBoxes().filter(b => b.day === S.day && !b.sheetRow && !shooting(b.id) && viewStatus(b) === 'ready').sort((a, b) => a.seq - b.seq);   // never a box still being shot (in progress, or the camera is open on its card)
 const dirtyBoxes = () => allBoxes().filter(b => b.day === S.day && b.sheetRow && !b.wrongRow && isDirty(b));
 /* ONE TAP: checks for repeats, writes the rows, then saves the photos in the background.
    The boxes lock as "Sending…" the moment it's tapped, so there's nothing to tap twice. */
@@ -1777,24 +1907,31 @@ async function syncDay() {
   } catch (e) { /* no connection or an older backend: the device's own boxes still work */ }
   finally { syncBusy = false; }
 }
-/* Photos of a box that was shot on another device, from the Drive files linked in its sheet row. */
-const picsLoading = new Set();
-async function loadPics(b) {
-  if (!b.imported || picsOff || picsLoading.has(b.id)) return;
+/* Photos of a box that was shot on another device, from the Drive files linked in its sheet row. Returns the download
+   still running for that box (a read of the box waits for it). */
+const picsLoading = new Map();
+const picsMissing = b => !!b.imported && !picsOff && (b.pics || []).some(p => !(b.picsDone || []).includes(p.id));
+function loadPics(b) {
+  if (!b.imported || picsOff) return Promise.resolve();
+  if (picsLoading.has(b.id)) return picsLoading.get(b.id);
   const want = (b.pics || []).filter(p => !(b.picsDone || []).includes(p.id));
-  if (!want.length) return;
-  picsLoading.add(b.id);
-  try {
-    for (const pic of want) {
-      const j = await api('photoGet', { id: pic.id });
-      const bytes = Uint8Array.from(atob(j.b64), c => c.charCodeAt(0));
-      const { blob, w, h } = await scaleTo(new Blob([bytes], { type: 'image/jpeg' }), 2400, 0.92);
-      const p = { id: uid(), t: Date.now(), blob, w, h, split: false, box: b.id, kind: /LABEL/i.test(pic.label) ? 'label' : 'item', src: 'drive' };
-      await putPhoto(p); S.photos.set(p.id, p);
-      await patchBox(b.id, x => { x.photos.push(p.id); x.picsDone = [...(x.picsDone || []), pic.id]; });
-    }
-  } catch (e) { if (/Unknown request/.test(e.message)) picsOff = true; }
-  finally { picsLoading.delete(b.id); }
+  if (!want.length) return Promise.resolve();
+  const run = (async () => {
+    await null;                                      // listed as running before it starts
+    try {
+      for (const pic of want) {
+        const j = await api('photoGet', { id: pic.id });
+        const bytes = Uint8Array.from(atob(j.b64), c => c.charCodeAt(0));
+        const { blob, w, h } = await scaleTo(new Blob([bytes], { type: 'image/jpeg' }), 2400, 0.92);
+        const p = { id: uid(), t: Date.now(), blob, w, h, split: false, box: b.id, kind: /LABEL/i.test(pic.label) ? 'label' : 'item', src: 'drive' };
+        await putPhoto(p); S.photos.set(p.id, p);
+        await patchBox(b.id, x => { x.photos.push(p.id); x.picsDone = [...(x.picsDone || []), pic.id]; });
+      }
+    } catch (e) { if (/Unknown request/.test(e.message)) picsOff = true; }
+    finally { picsLoading.delete(b.id); render(); }  // the card shows its last photo (and Read again) the moment loading ends
+  })();
+  picsLoading.set(b.id, run);
+  return run;
 }
 setInterval(syncDay, 30000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) syncDay(); });
@@ -2054,6 +2191,10 @@ function renderCurrent() {
   else if (document.activeElement !== ta && !noteTimer && ta.dataset.dirty !== '1') ta.value = b.note || '';
   $('#curTell').classList.toggle('has', !!ta.value.trim());
   if (!$('#curBar').hidden) fitNote();
+  // Photos still on their way show on the button; a tap then waits for them, says so, and finishes the box.
+  const fin = $('#curFinish'), n = S.saving;
+  fin.disabled = S.ending > 0;
+  fin.textContent = S.ending ? 'Finishing…' : n ? `Saving ${n} photo${n === 1 ? '' : 's'}…` : 'Finish this box →';
   const ph = b.photos.map(id => S.photos.get(id)).filter(Boolean);
   const nl = ph.filter(p => p.kind === 'label').length;
   $('#curText').textContent = `Box #${b.seq} in progress — ${nl ? nl + ' label' : 'no label yet'}, ${ph.length - nl} other photo${ph.length - nl === 1 ? '' : 's'}`;
@@ -2068,7 +2209,7 @@ function render() { $('#todayChip').textContent = capsDate(TODAY()); renderLink(
 
 /* ================= events ================= */
 $('#pendSort').addEventListener('click', sortPending);
-$('#curFinish').addEventListener('click', finishCurrent);
+$('#curFinish').addEventListener('click', () => afterPhotos(finishCurrent));   // a photo still saving goes into this box first
 $('#pendClear').addEventListener('click', () => { $('#pendConfirm').hidden = false; });
 $('#pendClearNo').addEventListener('click', () => { $('#pendConfirm').hidden = true; });
 $('#pendClearYes').addEventListener('click', async () => {
@@ -2098,12 +2239,22 @@ document.addEventListener('click', e => {
     case 'toggle': S.expanded.has(id) ? S.expanded.delete(id) : (S.expanded.add(id), loadPics(b)); render(); break;
     case 'inv': patchBox(id, x => { x.row.invoice = !x.row.invoice; x.edited.invoice = true; }); break;
     case 'ok': patchBox(id, x => { x.ok = true; }); break;
-    case 'reread': releaseCurrent(id); S.held.delete(id); queueRead(id, { effort: 'high', careful: true }); break;   // "Read again" always reads at high
+    case 'reread': {                                 // "Read again" always reads at high
+      const go = () => { releaseCurrent(id); S.held.delete(id); queueRead(id, { effort: 'high', careful: true }); };
+      if (id === S.current) afterPhotos(go); else go();   // the box in progress: once its photos still saving are in
+      break;
+    }
     case 'cam': openCamera(id); break;
     case 'send1':
-      // The box in progress: finish it; a note typed since its read is read first (it then goes by itself when clean).
-      if (releaseCurrent(id) && (b.note || '') !== ((b.read || {}).note || '')) { queueRead(id); render(); break; }
-      planSend([b]); break;
+      // The box in progress: finish it once its photos still saving are in; a note typed or a photo added since its read
+      // is read first (it then goes by itself when clean).
+      if (id === S.current) afterPhotos(() => {
+        const x = S.boxes.get(id); if (!x) return;
+        if (releaseCurrent(id) && ((x.note || '') !== ((x.read || {}).note || '') || x.status !== 'read')) { queueRead(id); render(); }
+        else if (viewStatus(x) === 'ready') planSend([x]); else render();
+      });
+      else planSend([b]);
+      break;
     case 'resend':
       patchBox(id, x => { x.sheetRow = null; x.sentCells = null; x.wrongRow = false; x.status = 'read'; x.ok = true; x.photosLinked = false; delete x.sendTry; })
         .then(() => planSend([S.boxes.get(id)]));
@@ -2142,7 +2293,12 @@ document.addEventListener('change', e => {
 async function deleteBox(id) {
   const b = S.boxes.get(id); S.confirmDel = null; if (!b) return;
   if (b.sheetRow) ls.set('goneRows', JSON.stringify([...goneRows(), String(b.sheetRow)].slice(-500)));   // its row stays in the sheet: don't bring the card back
-  for (const pid of b.photos) { await delPhoto(pid); S.photos.delete(pid); }
+  // A photo another box also lists stays with that box (it now points at it); only the rest leave the phone.
+  for (const pid of b.photos) {
+    const other = allBoxes().find(o => o.id !== id && o.photos.includes(pid)), p = S.photos.get(pid);
+    if (other) { if (p && p.box === id) { p.box = other.id; await putPhoto(p); } continue; }
+    S.photos.delete(pid); await delPhoto(pid);
+  }
   await delBoxDb(id); S.boxes.delete(id); trkIdx = null; S.expanded.delete(id); render();
   paceGone(b);                                                         // work meter: its row is still in the sheet, so it stays counted
 }
@@ -2186,8 +2342,8 @@ $('#lbKind').addEventListener('click', async () => {
 $('#lbDel').addEventListener('click', async () => {
   if (!S.lb || !S.lb.box) return;
   const { pid, box } = S.lb; closeLb();
+  S.photos.delete(pid); await delPhoto(pid);          // off the phone first: nothing can write it back, and no box list outlives it
   await patchBox(box, b => { b.photos = b.photos.filter(x => x !== pid); b.ok = false; });
-  await delPhoto(pid); S.photos.delete(pid);
   if (S.boxes.get(box).photos.length) queueRead(box); else render();
 });
 
@@ -2322,6 +2478,23 @@ $('#purgeBtn').addEventListener('click', async () => {
 });
 
 /* ================= boot ================= */
+/* A photo saved with its box but listed by no box (the app was closed halfway through saving it, before photos and
+   boxes were saved together): it goes back into its box, in shooting order. A box not in the sheet yet is read again;
+   one already in the sheet saves its photos to Drive again, this one with them. Its box is gone: it waits to be
+   sorted. A photo removed on purpose is off the phone before any box forgets it, so it never comes back. */
+async function repairStrays() {
+  const listed = new Set(), fixed = new Set();
+  for (const b of S.boxes.values()) for (const id of b.photos || []) listed.add(id);
+  for (const p of [...S.photos.values()].filter(x => x.box && !listed.has(x.id)).sort((a, c) => (a.t || 0) - (c.t || 0))) {
+    const b = S.boxes.get(p.box);
+    if (p.src === 'drive') { S.photos.delete(p.id); await delPhoto(p.id); continue; }   // a copy of another phone's Drive photo: it loads again with its card
+    if (!b) { p.box = null; await putPhoto(p); continue; }
+    b.photos.push(p.id); fixed.add(b);
+    if (!b.sheetRow) { b.status = 'new'; b.ok = false; if (b.id !== S.current && !(S.resume || []).includes(b)) S.resume = (S.resume || []).concat(b); }
+    else if (!b.imported) b.photosLinked = false;      // another phone's row keeps its own Drive photos
+  }
+  for (const b of fixed) await putBox(b);
+}
 (async () => {
   render();                                            // draw immediately; saved boxes fill in a moment later
   try {
@@ -2330,6 +2503,7 @@ $('#purgeBtn').addEventListener('click', async () => {
     for (const b of boxes) { if (b.status === 'reading' || b.status === 'queued') { b.status = 'new'; S.resume = (S.resume || []).concat(b); } S.boxes.set(b.id, b); }
     trkIdx = null;
   } catch (e) { notice('This phone’s storage couldn’t be opened. Photos won’t be kept.', true); }
+  try { await repairStrays(); } catch (e) { /* tried again at the next start */ }
   try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch (e) {}
   render();
   paceBoot();                                          // work meter strip under the header
