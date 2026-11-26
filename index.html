@@ -995,9 +995,34 @@ function shoot() {
    Only NEXT BOX (camera) or "Finish this box" starts the next one. */
 S.current = ls.get('curBox') || null;
 async function currentBox() {
+  try { followToday(); } catch (e) {}                // past midnight: the screen follows, and a box left in progress is finished
   let b = S.current && S.boxes.get(S.current);
-  if (!b || b.sheetRow || b.day !== TODAY()) { b = await newBox(); S.current = b.id; ls.set('curBox', b.id); }
+  if (!b || b.sheetRow || (b.day !== TODAY() && !keepOld(b))) { b = await newBox(); S.current = b.id; ls.set('curBox', b.id); }
   return b.id;
+}
+/* The box in progress is from an earlier day. Touched in the last 2 hours: one package shot across midnight, so it stays
+   one box, dated the day it was started. Older: it was left unfinished (end of the shift), so it is finished as “Finish
+   this box” does — read now, and sent with its own date — and the next photo starts a new box. */
+const lastTouch = b => Math.max(b.updatedAt || 0, b.createdAt || 0, ...b.photos.map(id => Math.min(Date.now(), (S.photos.get(id) || {}).t || 0)));
+const keepOld = b => !b.sheetRow && b.photos.length > 0 && Date.now() - lastTouch(b) < 2 * 3600000;
+function retireOld() {
+  const b = S.current && S.boxes.get(S.current);
+  if (!b || b.sheetRow || b.day === TODAY() || !b.photos.length || keepOld(b)) return;
+  finishCurrent();
+  notice(`Box #${b.seq} of ${capsDate(b.day)} was still in progress. ${S.cfg.url && S.cfg.token ? 'It is being read now' : 'It is read once this device is linked'} — it will go into the sheet with that date.`, true);
+}
+/* The day on screen follows the clock: past midnight an operator who was looking at today gets the new today (one who
+   picked another day in the list stays there), never while typing on a card. Runs every minute, when the app comes back
+   on screen and before a photo picks its box; a box left in progress on an earlier day is finished then too. */
+let lastToday = S.day;
+function followToday() {
+  const t = TODAY(), a = document.activeElement;
+  if (t !== lastToday && !(a && a.closest && a.closest('#boxes') && a.matches('input,textarea'))) {
+    if (S.day === lastToday) S.day = t;
+    lastToday = t;
+    render(); syncDay(); autoSend();
+  }
+  retireOld();
 }
 /* A button on the card of the box in progress (Read again, + Camera then DONE, Send to sheet) finishes it: the note is
    saved and the next photo starts a new box. Returns true when it was the box in progress. */
@@ -1714,7 +1739,7 @@ async function planSend(only, auto) {
     if (!dupes.length) return await executeSend(list);
     for (const d of dupes) S.sending.delete(d.b.id);
     if (auto) {                                       // automatic sending never decides about repeats: hold it for the operator
-      for (const d of dupes) { S.held.add(d.b.id); notice(`Box #${d.b.seq}: tracking ${d.b.row.tracking} is already in the sheet at row ${d.row}. Check it, then tap Send.`, true); }
+      for (const d of dupes) { S.held.add(d.b.id); notice(`Box ${boxNo(d.b)}: tracking ${d.b.row.tracking} is already in the sheet at row ${d.row}. Check it, then tap Send.`, true); }
       const rest = list.filter(b => !hits[b.row.tracking]);
       if (rest.length) return await executeSend(rest);
       S.busy = false; barMsg(''); render(); autoSend(); return;
@@ -1724,6 +1749,7 @@ async function planSend(only, auto) {
   } catch (e) { sendFailed(list, e); }
 }
 const rowsOf = list => list.map(b => ({ id: b.id, day: b.day, cells: cells(b).slice(0, 7) }));
+const boxNo = b => '#' + b.seq + (b.day && b.day !== TODAY() ? ' of ' + capsDate(b.day) : '');   // a box of another day is named with it
 /* A repeat that is really this box's own earlier send (the row went in, the reply got lost): the box was sent
    before, the row sits below where the sheet ended at that send, and no other box here owns that row. */
 function isOwnLostRow(b, row) {
@@ -1735,18 +1761,30 @@ async function adoptRows(ds) {
     await patchBox(d.b.id, x => { x.sheetRow = +d.row; x.status = 'sent'; x.sentCells = cells(x); x.sentAt = Date.now(); delete x.sendTry; });
     S.held.delete(d.b.id); S.sending.delete(d.b.id); queueLinks(d.b.id);
   }
-  notice(`✓ ${ds.map(d => `Box #${d.b.seq} was already in the sheet at row ${d.row}`).join('; ')} — marked as sent, nothing written twice.`);
+  notice(`✓ ${ds.map(d => `Box ${boxNo(d.b)} was already in the sheet at row ${d.row}`).join('; ')} — marked as sent, nothing written twice.`);
 }
 function sendFailed(list, e) {
   for (const b of list) S.sending.delete(b.id);
   S.busy = false; barMsg(''); notice(e.message, true); S.autoSendFails = (S.autoSendFails || 0) + 1; render();
 }
-/* Item 7: a box that read clean (no warnings at all) goes to the sheet on its own, one at a time. */
+/* Item 7: a box that read clean (no warnings at all) goes to the sheet on its own, one at a time — today's and
+   yesterday's whatever day is on screen (one finished after midnight, or whose send failed in the evening, goes with its
+   own date: the backend writes that date in column H, as a tap on Send does), plus the day on screen. */
+const dayBefore = k => { const [y, m, d] = k.split('-').map(Number); return dayKeyOf(new Date(y, m - 1, d - 1, 12)); };
 function autoSend() {
   if (!S.autoSend || S.busy || S.plan || !S.cfg.url) return;
-  const b = sendable().find(x => !S.held.has(x.id) && !reasons(x).length && !watchHits(x).length);   // watch-list names wait for the operator
+  const t = TODAY(), days = new Set([t, dayBefore(t), S.day]);
+  const b = allBoxes().filter(x => days.has(x.day) && !x.imported && !x.sheetRow && !shooting(x.id) && viewStatus(x) === 'ready')
+    .sort((a, c) => a.day.localeCompare(c.day) || a.seq - c.seq)
+    // Watch-list names wait for the operator. So does a box whose earlier send may already be in the sheet when its
+    // tracking can't find that row again (a vendor name, a short number): sent again, it could be written twice.
+    .find(x => !S.held.has(x.id) && !reasons(x).length && !watchHits(x).length && !(x.sendTry && !trkId(x.row.tracking)));
   if (b) planSend([b], true);
 }
+/* A send that failed (no signal, Google busy) goes again by itself: when the phone is back online, and every 2 minutes
+   until one goes through. */
+window.addEventListener('online', () => { if (S.autoSendFails) autoSend(); });
+setInterval(() => { if (S.autoSendFails) autoSend(); }, 120000);
 async function executeSend(list) {
   if (!list.length) return;
   S.busy = true; S.plan = null; for (const b of list) S.sending.add(b.id); renderPlan(); render();
@@ -1763,7 +1801,7 @@ async function finishSend(list, placed, nextRow, rows) {
   for (const p of placed) await patchBox(p.id, x => { x.sheetRow = p.row; x.status = 'sent'; x.sentCells = sentOf(p.id, x); x.sentAt = Date.now(); delete x.sendTry; });
   for (const b of list) S.sending.delete(b.id);
   S.busy = false;
-  const rs = placed.map(p => p.row), seqs = placed.map(p => '#' + (S.boxes.get(p.id) || {}).seq).join(', ');
+  const rs = placed.map(p => p.row), seqs = placed.map(p => boxNo(S.boxes.get(p.id) || {})).join(', ');
   const where = rs.length === 1 ? `row ${rs[0]}` : `rows ${Math.min(...rs)}–${Math.max(...rs)}`;
   barMsg(`✓ Sent ${seqs} → ${where}`);
   notice(`✓ Box ${seqs} is in the sheet (${where}). Photos are saving in the background.`);
@@ -1991,7 +2029,7 @@ function loadPics(b) {
   return run;
 }
 setInterval(syncDay, 30000);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) syncDay(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { followToday(); syncDay(); } });   // back on screen: maybe a new day
 /* "Print label" opens this: + / − picks how many, then Print. */
 /* "Print 1/N…" on the card opens it numbered, with the count selected so the total can be typed straight away. */
 function openPrintPrompt(b, numbered) {
@@ -2217,16 +2255,29 @@ function renderList() {
     prev = el;
   }
 }
+/* This phone's boxes with photos that aren't in the sheet, on days other than the one on screen (not one still being
+   shot): the latest such day and how many it has. */
+function leftElsewhere() {
+  const by = new Map();
+  for (const b of S.boxes.values()) if (b.day !== S.day && !b.imported && !b.sheetRow && b.photos.length && !shooting(b.id)) by.set(b.day, (by.get(b.day) || 0) + 1);
+  const day = [...by.keys()].sort().pop();
+  return day ? { day, n: by.get(day) } : null;
+}
 function renderBar() {
   const n = sendable().length, d = dirtyBoxes().length, u = unlinked().length, btn = $('#sendBtn');
   const sentToday = allBoxes().some(b => b.day === S.day && b.sheetRow);
-  const mode = S.busy ? '' : (n ? 'send' : (d ? 'update' : (u ? 'photos' : '')));
+  let mode = S.busy ? '' : (n ? 'send' : (d ? 'update' : (u ? 'photos' : '')));
+  // Nothing to do on this day, but boxes of another day aren't in the sheet: never "✓ All sent" then — a tap opens that day.
+  const away = S.busy || mode ? null : leftElsewhere();
+  if (away) mode = 'day';
+  const when = away && (away.day.slice(0, 4) === TODAY().slice(0, 4) ? capsDate(away.day).slice(0, -5) : capsDate(away.day));
   btn.textContent = S.busy ? `Sending ${S.sending.size || ''}…`.replace('  ', ' ')
+    : away ? `${away.n} box${away.n === 1 ? '' : 'es'} of ${when} not in the sheet — tap to open that day`
     : ({ send: `Send ${n} to sheet`, update: `Update ${d} changed row${d === 1 ? '' : 's'}`, photos: `Save photos for ${u} row${u === 1 ? '' : 's'}` }[mode]
       || (sentToday ? '✓ All sent' : 'Nothing ready to send'));
   btn.disabled = !mode;
   btn.classList.toggle('done', !mode && !S.busy && sentToday);
-  btn.dataset.mode = mode;
+  btn.dataset.mode = mode; btn.dataset.day = away ? away.day : '';
 }
 function renderPlan() {
   const el = $('#plan');
@@ -2265,7 +2316,7 @@ function renderCurrent() {
   fin.textContent = S.ending ? 'Finishing…' : n ? `Saving ${n} photo${n === 1 ? '' : 's'}…` : 'Finish this box →';
   const ph = b.photos.map(id => S.photos.get(id)).filter(Boolean);
   const nl = ph.filter(p => p.kind === 'label').length;
-  $('#curText').textContent = `Box #${b.seq} in progress — ${nl ? nl + ' label' : 'no label yet'}, ${ph.length - nl} other photo${ph.length - nl === 1 ? '' : 's'}`;
+  $('#curText').textContent = `Box #${b.seq}${b.day !== TODAY() ? ` of ${capsDate(b.day)}` : ''} in progress — ${nl ? nl + ' label' : 'no label yet'}, ${ph.length - nl} other photo${ph.length - nl === 1 ? '' : 's'}`;
   $('#curThumbs').innerHTML = ph.slice(-12).map(p => thumbHtml(p.id)).join('');
 }
 function renderLink() {
@@ -2290,6 +2341,7 @@ $('#sendBtn').addEventListener('click', () => {
   const m = $('#sendBtn').dataset.mode;
   if (!m) return;
   $('#sendBtn').dataset.mode = ''; $('#sendBtn').disabled = true;     // one tap only: locked until this finishes
+  if (m === 'day') { S.day = $('#sendBtn').dataset.day || S.day; render(); syncDay(); return; }   // that day's boxes on screen
   if (m === 'update') updateRows(); else if (m === 'photos') unlinked().forEach(b => { delete b.linkError; queueLinks(b.id); }); else planSend();   // a tap: full tries, and a notice if it still fails
 });
 $('#copyBtn').addEventListener('click', () => {
@@ -2599,6 +2651,7 @@ async function markOldPurges() {
   } catch (e) { notice('This phone’s storage couldn’t be opened. Photos won’t be kept.', true); }
   try { await markOldPurges(); } catch (e) { /* tried again at the next start */ }
   try { await repairStrays(); } catch (e) { /* tried again at the next start */ }
+  try { retireOld(); } catch (e) {}                    // a box left in progress on an earlier day: finished now, never shown as in progress
   try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch (e) {}
   render();
   paceBoot();                                          // work meter strip under the header
@@ -2613,7 +2666,7 @@ async function markOldPurges() {
   }
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) $('#camBtn').disabled = true;
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
-  setInterval(() => { $('#todayChip').textContent = capsDate(TODAY()); paceShow(); }, 60000);
+  setInterval(() => { $('#todayChip').textContent = capsDate(TODAY()); paceShow(); if (!document.hidden) followToday(); }, 60000);
 })();
 })();
 </script>
