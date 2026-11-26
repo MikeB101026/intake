@@ -4,15 +4,19 @@
  * v10: nothing written twice, every photo in Drive, the watch list found wherever it is.
  *  - append remembers for 6 hours which row it wrote each box to (by the box id the app sends). The same box sent
  *    again (its answer got lost on the way) gets that row back, with what the row holds (cells), and is not written
- *    a second time — as long as the row still holds exactly what was written.
+ *    a second time — as long as the row still holds exactly what was written, and only for an app that asks
+ *    (rowsBack: the v38 app). An older app's box is written again, as in v9: it would note what it sent, not the row.
  *  - dayRows reads back to the start of the day asked for (its separator row, or an earlier day's; 3000 rows at most)
  *    instead of a fixed 500, and says where it started reading (from).
  *  - photos saves every photo sent to the photo folder; the row links the first 15 in AV–BJ as before, the rest are
- *    in the folder with the same names (saved: how many are in Drive now; more: their links).
+ *    in the folder with the same names (saved: how many are in Drive now; more: their links). The row is checked
+ *    again right before AV–BJ is written: a row deleted or inserted by hand while the files were made never gets
+ *    another box's links.
  *  - the watch list block is the sheet's named range WATCH_LIST, which moves with the rows when rows are inserted or
  *    deleted above it: the log stops above it and the names are read from it. One with no names is an error the app
- *    puts on screen, never an empty list. No WATCH_LIST yet: made once from the WATCH_RANGE script property; neither:
- *    the fixed rows of before (WATCH_START, WATCH_RANGE's default).
+ *    puts on screen, never an empty list. No WATCH_LIST yet: made from the WATCH_RANGE script property; neither:
+ *    the fixed rows of before (WATCH_START, WATCH_RANGE's default). WATCH_RANGE and WATCH_START are kept on where it
+ *    is, so after a rollback v9 reads the block where it was at the last request.
  *
  * v9: a row typed by hand where the next row would go is skipped, never written over and never a reason to stop.
  *
@@ -58,14 +62,19 @@
  *                      Data → Named ranges), and from then on the named range counts. (Or name the cells WATCH_LIST
  *                      in the sheet yourself.)
  *   WATCH_START        optional, default 9070: the watch list's first row while there is neither WATCH_LIST nor
- *                      WATCH_RANGE (fixed: it doesn't move when rows are inserted or deleted)
+ *                      WATCH_RANGE (fixed: it doesn't move when rows are inserted or deleted). Once there is a
+ *                      WATCH_LIST, the backend keeps both on it by itself (WATCH_RANGE: its cells, WATCH_START: its
+ *                      first row): backend v9, after a rollback, reads only these two.
  *   SHEET_ID, TAB, PHOTO_FOLDER_ID, PHOTO_COL   optional: the sheet, its tab, the Drive photo folder, the first photo
  *                      link column (48 = AV); defaults below
  *   NEXT_ROW, LAST_SEP written by the backend: about where the log ends, and its last day separator row
  *   DEV_…              one per linked device (written by the app; delete one to unlink that device)
  *
- * Update: paste this whole file over Code.gs → Save → Deploy → Manage deployments → ✏️ Edit
- *         → Version: New version → Deploy, for each deployment (all three). The /exec addresses stay the same.
+ * Update: script.google.com → My projects → "700 Islands Intake backend" (the right project: Deploy → Manage
+ *         deployments lists three deployments). Paste this whole file over Code.gs → Save → Deploy → Manage
+ *         deployments. The first deployment: ✏️ Edit → Version: New version → Deploy, and note the version number it
+ *         gets (11 for backend v10). Each of the other two: ✏️ Edit → Version: pick that same version → Deploy. Never
+ *         "New deployment" (a fourth address): the three /exec addresses stay the same.
  */
 
 const DEFAULTS = {
@@ -105,7 +114,7 @@ function doPost(e) {
       case 'warm': return out(warm_(req));
       case 'watch': return out({ names: watchList_() });
       case 'dupes': return out({ hits: findDupes_(req.trackings || []) });
-      case 'append': return out(appendRows_(req.rows || [], !!req.checkDupes));
+      case 'append': return out(appendRows_(req.rows || [], !!req.checkDupes, !!req.rowsBack));
       case 'update': return out(updateRow_(req));
       case 'photos': return out(savePhotos_(req));
       case 'dayRows': return out(dayRows_(req));
@@ -360,8 +369,9 @@ function dayOf_(s) {
 function dateOf_(day) { const p = day.split('-').map(Number); return new Date(p[0], p[1] - 1, p[2], 12); }
 /** The watch list block: the sheet's named range WATCH_LIST. A named range moves with the rows when rows are inserted
  *  or deleted above it, so the log's last row and the names always come from where the block is now. Not there yet:
- *  made once from the WATCH_RANGE script property (the cells the block is in now). Neither: null — the fixed rows of
- *  before v10 count (WATCH_START, WATCH_RANGE's default). */
+ *  made from the WATCH_RANGE script property (the cells the block is in now; once named, kept on it below — so one
+ *  removed by mistake comes back where the block was). Neither: null — the fixed rows of before v10 count
+ *  (WATCH_START, WATCH_RANGE's default). */
 function watchRange_(sh) {
   const ss = sh.getParent();
   let r = ss.getRangeByName('WATCH_LIST');
@@ -372,6 +382,13 @@ function watchRange_(sh) {
   }
   // On another tab its row means nothing here: stop rather than guess where the log may end.
   if (r && r.getSheet().getName() !== sh.getName()) throw new Error('The named range WATCH_LIST isn’t on the tab "' + sh.getName() + '". Fix it in the sheet: Data → Named ranges.');
+  // Backend v9 (a rollback) knows only WATCH_RANGE and WATCH_START: kept on where the block is, so v9 reads it where it
+  // was at the last request — its names, and the log stops above it.
+  if (r) try {
+    const at = r.getA1Notation(), row = String(r.getRow());
+    if (PROPS.getProperty('WATCH_RANGE') !== at) PROPS.setProperty('WATCH_RANGE', at);
+    if (PROPS.getProperty('WATCH_START') !== row) PROPS.setProperty('WATCH_START', row);
+  } catch (e) { /* only a help for a rollback: never a reason for a request to fail */ }
   return r;
 }
 
@@ -490,10 +507,10 @@ function findDupes_(trackings) {
 
 /* A box append wrote, by the box id the app sends: its row and what the row held right after (6 hours, the longest the
    cache keeps anything). The same box sent again — its answer got lost on the way, or the phone sent the request twice —
-   gets that row back instead of a second row, but only while all of A–H are still what was written: after a row is
-   deleted or inserted above it, another box may be on that row number (one off the same vendor truck for the same
-   customer can have the same customer, tracking and day). The cache is only a help: when it fails, rows are written
-   as before v10. */
+   gets that row back instead of a second row (when the app asks for it: rowsBack, see appendRows_), but only while all
+   of A–H are still what was written: after a row is deleted or inserted above it, another box may be on that row
+   number (one off the same vendor truck for the same customer can have the same customer, tracking and day). The cache
+   is only a help: when it fails, rows are written as before v10. */
 const BOX_TTL = 21600;
 const rowSig_ = r => sha_(JSON.stringify([caps_(r[0]), alnum_(r[1])].concat(r.slice(2, 7).map(caps_), [dayOf_(r[7])])));
 function placedBefore_(sh, rows) {
@@ -513,16 +530,19 @@ function placedBefore_(sh, rows) {
 
 /** rows: [{id, day:'YYYY-MM-DD', cells:[customer, tracking, pieces, weight, shipper, invoice, contents]}]
  *  checkDupes: if any tracking is already in the log, write nothing and return {dupes}.
- *  A box written here before (placedBefore_) is not written again: it comes back in placed with cells, A–H as its row
- *  holds them, so the app notes what the sheet has. */
-function appendRows_(rows, checkDupes) {
+ *  rowsBack (the v38 app asks for it): a box written here before (placedBefore_) is not written again: it comes back in
+ *  placed with cells, A–H as its row holds them, so the app notes what the sheet has. Without it every box is written,
+ *  as v9 did: an older app notes what it sent now, never what the row holds, so handing it the row back would quietly
+ *  drop a fix typed on its card between the lost answer and the retry — a second row keeps it. Each box's row is
+ *  remembered either way (a phone that moves on to v38 meanwhile gets it back). */
+function appendRows_(rows, checkDupes, rowsBack) {
   if (!rows.length) return { placed: [] };
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
     const sh = sheet_();
     const end = findEnd_(sh);
-    const again = placedBefore_(sh, rows);
+    const again = rowsBack ? placedBefore_(sh, rows) : [];
     rows = rows.filter(r => !again.some(p => p.id === String(r.id || '')));
     if (!rows.length) return { placed: again, nextRow: end.L + 1 };
     if (checkDupes) {
@@ -604,6 +624,9 @@ function savePhotos_(req) {
   const links = photos.map(save), more = all.slice(15).map(save);    // every file first: the row changes only once all are in
   const cells = links.map(l => '=HYPERLINK("' + l.url + '","' + l.label + '")');
   while (cells.length < 15) cells.push('');
+  // The files take a while (about a second each): a row deleted or inserted by hand meanwhile puts another box on this
+  // row number. Its links are never written over — the app moves the box to its row and saves it there.
+  if (alnum_(sh.getRange(row, 2).getDisplayValue()) !== alnum_(req.expectTracking)) throw new Error('Sheet row ' + row + ' no longer holds this box.');
   sh.getRange(row, +prop('PHOTO_COL'), 1, 15).setValues([cells]);
   return { links, more, saved: links.length + more.length };
 }

@@ -1866,7 +1866,9 @@ async function planSend(only, auto) {
     }
     let hits;
     if (await backendV() >= 3) {                      // v3+ backend: repeat check + write in one round trip (an early v2 ignored checkDupes)
-      const rows = rowsOf(list), r = await api('append', { rows, checkDupes: true });
+      // rowsBack: backend v10 hands back the row an earlier try of a box already wrote, with what it holds (see
+      // finishSend), instead of writing it twice — only to an app that asks: an older one would note what it sent now.
+      const rows = rowsOf(list), r = await api('append', { rows, checkDupes: true, rowsBack: true });
       if (!r.dupes) return await finishSend(list, r.placed, r.nextRow, rows);
       hits = r.dupes;
     } else hits = (await api('dupes', { trackings: list.map(b => b.row.tracking) })).hits;
@@ -1985,7 +1987,7 @@ async function executeSend(list) {
   if (!list.length) return;
   S.busy = true; S.plan = null; for (const b of list) S.sending.add(b.id); renderPlan(); render();
   barMsg(`Writing ${list.length} row${list.length === 1 ? '' : 's'}…`);
-  try { const rows = rowsOf(list), r = await api('append', { rows }); await finishSend(list, r.placed, r.nextRow, rows); }
+  try { const rows = rowsOf(list), r = await api('append', { rows, rowsBack: true }); await finishSend(list, r.placed, r.nextRow, rows); }   // rowsBack: see planSend
   catch (e) { sendFailed(list, e); }
 }
 async function finishSend(list, placed, nextRow, rows) {
