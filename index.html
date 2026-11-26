@@ -782,16 +782,18 @@ async function post(url, body) {
   } catch (e) { throw new Error('No connection to the backend. Check your signal and try again.'); }
   let j;
   try { j = await r.json(); } catch (e) { throw new Error('The backend address doesn’t look right (Settings).'); }
-  if (j.error) throw new Error(j.error);
+  if (j.error) throw Object.assign(new Error(j.error), { backend: true });   // the backend answered: not the connection
   return j;
 }
 /* Picture sizes per job (smaller = faster): labels 1568 px (Claude's full detail), contents 800 px, sorting 512 px. */
 const SIZE = { label: 1568, inside: 800, sort: 512 };   // contents only need the product to be recognisable
-let bvP = null;
-function backendV() {                                                  // asked once per app start, shared by every caller
-  if (S.bv) return Promise.resolve(S.bv);
-  if (+ls.get('bv3:' + S.cfg.url) >= 3) return Promise.resolve(S.bv = +ls.get('bv3:' + S.cfg.url));   // known v3+ backend: skip the round trip
-  return bvP || (bvP = api('ping').then(j => { S.bv = j.v || 1; if (S.bv >= 3) ls.set('bv3:' + S.cfg.url, String(S.bv)); return S.bv; }, () => { bvP = null; return 1; }));
+let bvP = null, bvAsked = false;
+/* now: the version the backend has now, asked of it once per app start — a version remembered from an earlier start
+   may be older than the backend is (it was updated since). Without it a remembered one is used. */
+function backendV(now) {                                               // asked once per app start, shared by every caller
+  if (S.bv && (!now || bvAsked)) return Promise.resolve(S.bv);
+  if (!now && +ls.get('bv3:' + S.cfg.url) >= 3) return Promise.resolve(S.bv = +ls.get('bv3:' + S.cfg.url));   // known v3+ backend: skip the round trip
+  return bvP || (bvP = api('ping').then(j => { S.bv = j.v || 1; bvAsked = true; if (S.bv >= 3) ls.set('bv3:' + S.cfg.url, String(S.bv)); return S.bv; }, () => { bvP = null; return S.bv || 1; }));
 }
 /** o: {prompt, images:[{blob, max}], effort, careful, fast, system} */
 async function claude(o) {
@@ -1723,7 +1725,13 @@ let watchP = null, watchAt = 0;
 function loadWatch() {
   if (watchP && Date.now() - watchAt < 30000) return watchP;
   watchAt = Date.now();
-  const p = watchP = api('watch').then(watchSet, e => { S.watchFailed = true; render(); throw e; }).finally(() => { if (watchP === p) watchP = null; });
+  const p = watchP = api('watch').then(watchSet, e => {
+    S.watchFailed = true;
+    // The backend answered that the list can't be read (v10: the watch list block holds no names): no signal won't fix
+    // that, someone at the sheet will — said once, in red.
+    if (e.backend && S.watchErr !== e.message) { S.watchErr = e.message; notice(`Watch list not loaded: ${e.message}`, true); }
+    render(); throw e;
+  }).finally(() => { if (watchP === p) watchP = null; });
   return p;
 }
 const watchAgain = () => {
@@ -1744,6 +1752,7 @@ function watchSet(j) {
     const alts = [...parts.map(p => p.split(/\s+/).length === 1 && parts.length > 1 ? p + ' ' + surname : p), ...inner].map(a => caps(a).split(/[^A-Z0-9]+/).filter(Boolean)).filter(a => a.length);
     return { name, note: note ? 'WATCH LIST: ' + note : 'ON WATCH LIST', alts };
   });
+  S.watchErr = '';
   render(); autoSend();                              // the boxes that waited for it
 }
 
@@ -1851,12 +1860,15 @@ function isOwnLostRow(b, row, r) {
    with Update. That is the row's own cells when they are what a try of this box sent. A row changed since (in the
    sheet or on another phone, before "mark as sent") is noted as what this box sent with that tracking, so the sync
    takes those changes over and Update never writes them back. */
+function sentFrom(x, rowCells) {                     // what box x notes as sent for a row it already has (that row's cells, or none)
+  const c = rowCells ? asSent(rowCells, x.day) : null, tried = x.sendTry && x.sendTry.cells ? triedCells(x) : [];
+  const sent = c ? (tried.some(s => sameCells(c, asSent(s, x.day))) ? c : tried.find(s => alnum(s[1]) === alnum(c[1])) || c) : tried[0] || cells(x).slice(0, 7);
+  return [...sent, capsDate(x.day)];
+}
 async function adoptRows(ds) {
   for (const d of ds) {
     await patchBox(d.b.id, x => {
-      const c = d.cells ? asSent(d.cells, x.day) : null, tried = x.sendTry && x.sendTry.cells ? triedCells(x) : [];
-      const sent = c ? (tried.some(s => sameCells(c, asSent(s, x.day))) ? c : tried.find(s => alnum(s[1]) === alnum(c[1])) || c) : tried[0] || cells(x).slice(0, 7);
-      x.sentCells = [...sent, capsDate(x.day)];
+      x.sentCells = sentFrom(x, d.cells);
       x.sheetRow = +d.row; x.status = 'sent'; x.sentAt = Date.now(); delete x.sendTry;
     });
     S.held.delete(d.b.id); S.sending.delete(d.b.id); S.sendAfter.delete(d.b.id); queueLinks(d.b.id);
@@ -1908,8 +1920,11 @@ async function finishSend(list, placed, nextRow, rows) {
   const end = Math.max(+nextRow || 0, ...placed.map(p => +p.row + 1));   // where the sheet ends now (see isOwnLostRow)
   if (end > (S.nextRowSeen || 0)) { S.nextRowSeen = end; ls.set('nextRowSeen', String(end)); }
   // What the sheet got is what was sent, not what the box says now: a change made during the send shows as "Changed".
-  const sentOf = (id, x) => { const s = (rows || []).find(r => r.id === id); return s ? [...s.cells, capsDate(x.day)] : cells(x); };
-  for (const p of placed) await patchBox(p.id, x => { x.sheetRow = p.row; x.status = 'sent'; x.sentCells = sentOf(p.id, x); x.sentAt = Date.now(); delete x.sendTry; });
+  // A row an earlier try of the box had written already (its answer got lost; backend v10 doesn't write it twice) comes
+  // back with what it holds (cells): noted as "mark as sent" notes it, so a change made on the card since shows as
+  // "Changed" too and the sync never puts the row's older values back on the card.
+  const sentOf = (p, x) => { if (p.cells) return sentFrom(x, p.cells); const s = (rows || []).find(r => r.id === p.id); return s ? [...s.cells, capsDate(x.day)] : cells(x); };
+  for (const p of placed) await patchBox(p.id, x => { x.sheetRow = p.row; x.status = 'sent'; x.sentCells = sentOf(p, x); x.sentAt = Date.now(); delete x.sendTry; });
   for (const b of list) S.sending.delete(b.id);
   S.busy = false;
   const rs = placed.map(p => p.row), seqs = placed.map(p => boxNo(S.boxes.get(p.id) || {})).join(', ');
@@ -1922,7 +1937,8 @@ async function finishSend(list, placed, nextRow, rows) {
   render();
   autoSend();
 }
-/* Photos → Drive folder, private links in AV–BJ of the box's row (labels first, then inside; max 15).
+/* Photos → Drive folder, private links in AV–BJ of the box's row (labels first, then inside; max 15 links — backend
+   v10 also puts the photos past the 15 in the folder, an older one leaves them on the phone).
    Runs by itself after every send, one box at a time, and retries on its own — nothing to tap. */
 const LINK = { q: [], running: false };
 function queueLinks(id) { if (!LINK.q.includes(id)) LINK.q.push(id); runLinks(); }
@@ -1985,7 +2001,10 @@ async function linkPhotos(b) {
     if (!linkBlocked(b)) await patchBox(b.id, x => { if (same(x)) { x.photosLinked = true; x.photosLeft = ph.length; delete x.linkError; } });
     return;
   }
-  const ordered = [...ph.filter(p => p.kind === 'label'), ...ph.filter(p => p.kind !== 'label')].slice(0, 15);
+  // Backend v10 saves every photo in Drive (AV–BJ links the first 15); an older one takes 15. A box with more asks the
+  // backend which one it is now: it may have been updated since this phone last asked.
+  const all = ph.length > 15 && await backendV(true) >= 10;
+  const ordered = [...ph.filter(p => p.kind === 'label'), ...ph.filter(p => p.kind !== 'label')].slice(0, all ? ph.length : 15);
   if (!ordered.length) { await patchBox(b.id, x => { if (same(x)) { x.photosLinked = true; x.savedIds = []; x.photosLeft = 0; delete x.linkError; } }); return; }
   S.linking = b.id; render();
   try {
@@ -1997,14 +2016,17 @@ async function linkPhotos(b) {
     }));
     // The tracking the sheet holds (what was sent): one corrected here but not sent yet with Update would fail the check.
     const r = await api('photos', { row, expectTracking: b.sentCells && b.sentCells[1] != null ? b.sentCells[1] : b.row.tracking, photos });
+    // In Drive now: what a v10 backend says it saved; an older one keeps 15 at most (it may have been put back to one
+    // after this phone asked).
+    const n = r && r.saved != null ? Math.min(+r.saved || 0, ordered.length) : Math.min(15, ordered.length);
     let again = false;
     await patchBox(b.id, x => {
       if (+x.sheetRow !== row) return;                 // it moved to another row meanwhile: that row gets its own save
-      x.savedIds = ordered.map(p => p.id);             // in Drive and in AV–BJ: the only photos the purge may clear
-      x.photosLeft = ph.length - ordered.length;       // past the 15 links: only on this phone (the card says so)
+      x.savedIds = ordered.slice(0, n).map(p => p.id); // in Drive (AV–BJ links the first 15): the only photos the purge may clear
+      x.photosLeft = ph.length - n;                    // not in Drive: only on this phone (the card says so)
       if (x.imported) {                                // its row now links new Drive files, all of them already on this phone
         const pics = ((r && r.links) || []).map(l => { const m = String(l.url || '').match(/\/d\/([\w-]{20,})/); return m && { id: m[1], label: l.label }; });
-        if (pics.length === ordered.length && pics.every(Boolean)) { x.pics = pics; x.picsDone = pics.map(p => p.id); }
+        if (pics.length === Math.min(15, ordered.length) && pics.every(Boolean)) { x.pics = pics; x.picsDone = pics.map(p => p.id); }
       }
       if (same(x)) { x.photosLinked = true; delete x.linkError; delete x.linkErrAt; } else again = true;
     });
@@ -2386,7 +2408,9 @@ function cardHtml(b) {
     ` · ${b.read.escalated ? 'medium, then high (something looked unsure)' : (b.read.effort || 'high') + ' effort'}${b.read.careful ? ' · careful model' : ''}</div>`;
   if (b.sheetRow) {
     const n = b.photos.length, left = b.photosLeft != null ? b.photosLeft : b.imported ? 0 : Math.max(0, n - 15);   // (saved before this version: the first 15 went)
-    const pics = b.photosLinked ? (b.imported && !(b.pics || []).length ? 'no photos linked in AV–BJ' : 'photos linked in AV–BJ') + (left ? ` · ${left} more photo${left === 1 ? '' : 's'} only on this phone (the sheet links 15)` : '')
+    const more = b.photosLinked && b.savedIds ? b.savedIds.length - 15 : 0;          // backend v10: past the 15 links, saved in Drive
+    const pics = b.photosLinked ? (b.imported && !(b.pics || []).length ? 'no photos linked in AV–BJ' : 'photos linked in AV–BJ') + (more > 0 ? ` · ${more} more in the Drive photo folder (the sheet links 15)` : '')
+      + (left ? ` · ${left} more photo${left === 1 ? '' : 's'} only on this phone (the sheet links 15)` : '')
       : linkBlocked(b) ? `${n} photo${n === 1 ? '' : 's'} only on this phone — older photos of this box were already cleared from this phone, so the app can’t add ${n === 1 ? 'it' : 'them'} to AV–BJ`
       : S.linking === b.id || LINK.q.includes(b.id) ? 'saving photos…'
       : b.linkError ? `photos not saved yet (${esc(b.linkError)}) — the app tries again by itself, or tap “Save photos” below` : 'photos not saved yet';
@@ -2705,8 +2729,8 @@ async function saveCfg(url, token, first) {
   const st = $('#setStatus'); st.textContent = first + 'Testing…';
   try {
     const j = await api('ping');
-    S.bv = j.v || 1; if (S.bv >= 3) ls.set('bv3:' + S.cfg.url, String(S.bv));
-    st.textContent = first + `Connected. Model: ${j.model}` + (j.fastModel ? `, sorting with ${j.fastModel}` : ' (old backend: update Code.gs for full speed)') +
+    S.bv = j.v || 1; bvAsked = true; if (S.bv >= 3) ls.set('bv3:' + S.cfg.url, String(S.bv));
+    st.textContent = first + `Connected (backend v${S.bv}). Model: ${j.model}` + (j.fastModel ? `, sorting with ${j.fastModel}` : ' (old backend: update Code.gs for full speed)') +
       `. Sheet tab: ${j.tab}, next row about ${j.nextRow}.` + (j.hasKey ? '' : ' The Anthropic API key is NOT set in the backend yet.');
     loadWatch().catch(() => {});
     readWaiting(); syncDay();
