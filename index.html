@@ -1780,6 +1780,7 @@ async function planSend(only, auto) {
       const c = cells(b).slice(0, 7);
       if (!b.sendTry) b.sendTry = { at: Date.now(), from: S.nextRowSeen || 0, cells: c };
       else if (b.sendTry.cells && !triedCells(b).some(s => sameCells(s, c))) b.sendTry.later = [...(b.sendTry.later || []), c].slice(-3);
+      if (!auto) delete b.heldTrk;                    // a tap on Send: the operator decides about a repeat now (see autoSend)
       return putBox(b);
     }));
     // A day's rows as the sheet has them now (row → its cells and photo links), asked once per day.
@@ -1814,7 +1815,10 @@ async function planSend(only, auto) {
     days.clear();
     const own = [];
     for (const d of dupes) {
-      const m = await rowsOfDay(d.b.day).catch(() => null);
+      // Its day's rows can't be read (a weak signal): asked once more. Still no answer and the box was sent before: that
+      // row may be its own, so nothing is written and no bar asks — the next try (or the sync) finds out.
+      const m = await rowsOfDay(d.b.day).catch(() => { days.delete(d.b.day); return rowsOfDay(d.b.day); }).catch(() => null);
+      if (!m && retry.has(d.b.id)) throw new Error(`Box ${boxNo(d.b)} may already be in the sheet (row ${d.row}), but the sheet couldn’t be checked. Nothing was written — check your signal and tap Send again.`);
       d.r = m ? m.get(+d.row) || null : undefined;
       const r = m && retry.has(d.b.id) && lostRow(d.b, m, own);
       if (r) own.push({ b: d.b, row: r.row, cells: r.cells, d });
@@ -1828,7 +1832,12 @@ async function planSend(only, auto) {
     if (!dupes.length) return await executeSend(list);
     for (const d of dupes) S.sending.delete(d.b.id);
     if (auto) {                                       // automatic sending never decides about repeats: hold it for the operator
-      for (const d of dupes) { S.held.add(d.b.id); notice(`Box ${boxNo(d.b)}: tracking ${d.b.row.tracking} is already in the sheet at row ${d.row}. Check it, then tap Send.`, true); }
+      // The hold is kept on the box while its tracking stays the same, so a later start of the app doesn't ask again —
+      // only when the sheet could be checked (couldn't: asked again next time).
+      for (const d of dupes) {
+        S.held.add(d.b.id); if (d.r !== undefined) await patchBox(d.b.id, x => { x.heldTrk = alnum(x.row.tracking); });
+        notice(`Box ${boxNo(d.b)}: tracking ${d.b.row.tracking} is already in the sheet at row ${d.row}. Check it, then tap Send.`, true);
+      }
       const rest = list.filter(b => !hits[b.row.tracking]);
       if (rest.length) return await executeSend(rest);
       S.busy = false; barMsg(''); render(); autoSend(); return;
@@ -1869,7 +1878,7 @@ async function adoptRows(ds) {
   for (const d of ds) {
     await patchBox(d.b.id, x => {
       x.sentCells = sentFrom(x, d.cells);
-      x.sheetRow = +d.row; x.status = 'sent'; x.sentAt = Date.now(); delete x.sendTry;
+      x.sheetRow = +d.row; x.status = 'sent'; x.sentAt = Date.now(); delete x.sendTry; delete x.heldTrk;
     });
     S.held.delete(d.b.id); S.sending.delete(d.b.id); S.sendAfter.delete(d.b.id); queueLinks(d.b.id);
   }
@@ -1900,8 +1909,9 @@ function autoSend() {
   const b = allBoxes().filter(x => days.has(x.day) && !x.imported && !x.sheetRow && !shooting(x.id) && viewStatus(x) === 'ready')
     .sort((a, c) => a.day.localeCompare(c.day) || a.seq - c.seq)
     // Watch-list names wait for the operator. So does a box whose earlier send may already be in the sheet when its
-    // tracking can't find that row again (a vendor name, a short number): sent again, it could be written twice.
-    .find(x => !S.held.has(x.id) && !reasons(x).length && !watchHits(x).length && !(x.sendTry && !trkId(x.row.tracking)));
+    // tracking can't find that row again (a vendor name, a short number): sent again, it could be written twice. And one
+    // the repeat check held, at any earlier start too, while its tracking is the one it held: a tap on Send decides.
+    .find(x => !S.held.has(x.id) && !(x.heldTrk && x.heldTrk === alnum(x.row.tracking)) && !reasons(x).length && !watchHits(x).length && !(x.sendTry && !trkId(x.row.tracking)));
   if (b) planSend([b], true);
 }
 /* A send that failed (no signal, Google busy) goes again by itself: when the phone is back online, and every 2 minutes
@@ -1924,7 +1934,7 @@ async function finishSend(list, placed, nextRow, rows) {
   // back with what it holds (cells): noted as "mark as sent" notes it, so a change made on the card since shows as
   // "Changed" too and the sync never puts the row's older values back on the card.
   const sentOf = (p, x) => { if (p.cells) return sentFrom(x, p.cells); const s = (rows || []).find(r => r.id === p.id); return s ? [...s.cells, capsDate(x.day)] : cells(x); };
-  for (const p of placed) await patchBox(p.id, x => { x.sheetRow = p.row; x.status = 'sent'; x.sentCells = sentOf(p, x); x.sentAt = Date.now(); delete x.sendTry; });
+  for (const p of placed) await patchBox(p.id, x => { x.sheetRow = p.row; x.status = 'sent'; x.sentCells = sentOf(p, x); x.sentAt = Date.now(); delete x.sendTry; delete x.heldTrk; });
   for (const b of list) S.sending.delete(b.id);
   S.busy = false;
   const rs = placed.map(p => p.row), seqs = placed.map(p => boxNo(S.boxes.get(p.id) || {})).join(', ');
@@ -2109,13 +2119,15 @@ async function syncDay() {
     for (const r of rows) { const k = key(r.cells); if (k) once.set(k, once.has(k) ? null : r); }
     const unseen = b => !!from && +b.sheetRow < +from;
     const holds = b => { const h = at.get(+b.sheetRow); return h ? key(h.cells) === key(b.sentCells) : null; };   // null: no row of the day there
-    // A row deleted or inserted by hand moves every row below it: a box follows its tracking to where its row is now.
-    // Its number holds no row of the day (before v10 that may only mean out of the backend's reach) or it was flagged
-    // as on a wrong row: only a row holding exactly what it sent is its own.
+    // A row deleted or inserted by hand moves every row below it: a box follows its tracking to where its row is now —
+    // only to a row holding exactly what it sent, and never to one another box here holds with that tracking. One number
+    // on two rows (pallets of one BOL) and its own row's number changed in the sheet: it didn't move, that row is the
+    // other box's.
     for (const b of allBoxes().filter(x => x.day === day && x.sheetRow && x.sentCells && !unseen(x))) {
       const k = key(b.sentCells), to = k && once.get(k), h = holds(b);
       if (!to || +to.row === +b.sheetRow || h === true) continue;
-      if ((h === null || b.wrongRow) && !sameCells(asSent(to.cells, day), b.sentCells)) continue;
+      if (!sameCells(asSent(to.cells, day), b.sentCells)) continue;
+      if (allBoxes().some(o => o.id !== b.id && +o.sheetRow === +to.row && holds(o) === true)) continue;
       await patchBox(b.id, x => { if (x.purged && x.purged.row === +x.sheetRow) x.purged.row = +to.row; x.sheetRow = +to.row; x.wrongRow = false; });   // (its links moved with it)
     }
     // A box here whose row moved but can't be told apart yet (its tracking is on two of the day's rows): neither row
@@ -2124,9 +2136,13 @@ async function syncDay() {
     for (const r of rows.slice().sort((a, c) => a.row - c.row)) {
       const row = rowFromCells(r.cells), sc = cells({ row, day }), k = trkId(row.tracking);
       // The box on this row: never one that sent another tracking, unless the customer is still its own (a tracking fixed
-      // in the sheet) — that is another box's row, moved here. Two on one row: the one whose tracking it holds.
+      // in the sheet) or the row is its own fixed in place (customer and tracking typed over, the rest as it sent it, its
+      // own tracking on no row of the day, this one no other box's here nor a card deleted here) — anything else is
+      // another box's row, moved here. Two on one row: the one whose tracking it holds.
+      const fixedThere = b => !!k && sameCells(sc.slice(2, 7), b.sentCells.slice(2, 7)) && !once.has(key(b.sentCells)) && !gone.has(day + '|' + k)
+        && !allBoxes().some(o => o.id !== b.id && o.day === day && o.sentCells && key(o.sentCells) === k);
       const on = allBoxes().filter(b => b.day === day && +b.sheetRow === +r.row && !(b.sentCells && alnum(b.sentCells[1]) && alnum(row.tracking)
-        && alnum(b.sentCells[1]) !== alnum(row.tracking) && caps(b.sentCells[0]) !== caps(row.customer)));
+        && alnum(b.sentCells[1]) !== alnum(row.tracking) && caps(b.sentCells[0]) !== caps(row.customer) && !fixedThere(b)));
       const mine = on.find(b => k && key(b.sentCells) === k) || on[0];
       if (mine) {
         const changed = !mine.sentCells || sc.slice(0, 7).some((v, i) => caps(v) !== caps(mine.sentCells[i]));
@@ -2143,6 +2159,11 @@ async function syncDay() {
       // Its send went through but the reply got lost: only a row holding exactly what it sent (see isOwnLostRow).
       const own = allBoxes().find(b => !b.sheetRow && b.day === day && b.sendTry && !S.sending.has(b.id) && isOwnLostRow(b, r.row, r));
       if (own) { await adoptRows([{ b: own, row: r.row, cells: r.cells }]); continue; }
+      // A row that may still be such a lost send the rule can't confirm (changed in the sheet since, or tried before v38)
+      // is no second card while its box waits — that box's retry and the repeat bar ("mark as sent") decide. A row with
+      // photo links is another phone's: photos only go once a phone knows its row.
+      if (k && !(r.pics || []).length && allBoxes().some(b => !b.sheetRow && b.day === day && b.sendTry && +r.row >= (b.sendTry.from || 0)
+        && [b.row.tracking, ...(b.sendTry.cells ? triedCells(b).map(c => c[1]) : [])].some(tk => trkId(tk) === k))) continue;
       if (k && moved.has(k)) continue;
       const seq = 1 + Math.max(0, ...allBoxes().filter(b => b.day === day).map(b => b.seq || 0));
       await saveBox({ id: uid(), day, seq, createdAt: Date.now(), photos: [], note: '', status: 'sent', row, proof: proofFrom(row), flags: [], badges: [], read: null, readError: '',
@@ -2261,7 +2282,9 @@ async function updateRows() {
       const mine = cells(b).slice(0, 7), base = b.sentCells.slice(0, 7);
       if (!sheetNow.has(b.day)) { try { sheetNow.set(b.day, (await api('dayRows', { day: b.day })).rows || []); } catch (e) { sheetNow.set(b.day, null); } }
       const rows = sheetNow.get(b.day), cur = rows && rows.find(r => +r.row === +b.sheetRow);
-      if (!cur) { (rows ? notFound : noAnswer).push(b); continue; }
+      // Not among the rows the backend gave (moved, or too far back for it): never written blind either. The card then
+      // offers "Done in the sheet", for once the change is typed in there by hand.
+      if (!cur) { if (rows) { notFound.push(b); await patchBox(b.id, x => { x.updNotFound = true; }); } else noAnswer.push(b); continue; }
       const out = mine.map((v, i) => {
         const now = String(cur.cells[i] ?? '');
         if (caps(v) === caps(base[i] ?? '')) return now;
@@ -2280,7 +2303,7 @@ async function updateRows() {
           if (f === 'contents' && sheet.contents !== x.row.contents) x.proof = proofFrom(sheet);   // contents taken from the sheet
           x.row[f] = sheet[f];
         });
-        x.sentCells = cells({ row: sheet, day: x.day });
+        x.sentCells = cells({ row: sheet, day: x.day }); delete x.updNotFound;
         delete x.linkError;                            // photos that didn't save (say the row's tracking was just fixed) try afresh
       });
       relink(b.id);
@@ -2291,7 +2314,7 @@ async function updateRows() {
     barMsg(done ? `Updated ${done} row${done === 1 ? '' : 's'}` : '');
     const rs = l => `row${l.length > 1 ? 's' : ''} ${l.map(b => b.sheetRow).join(', ')}`, it = l => l.length > 1 ? 'they weren’t' : 'it wasn’t';
     const why = [err, noAnswer.length && `Couldn’t check ${rs(noAnswer)} in the sheet, so ${it(noAnswer)} changed — try again.`,
-      notFound.length && `Couldn’t find ${rs(notFound)} among the sheet’s rows of ${capsDate(notFound[0].day)} (moved, or too far back), so ${it(notFound)} changed — check ${notFound.length > 1 ? 'them' : 'it'} in the sheet.`].filter(Boolean);
+      notFound.length && `Couldn’t find ${rs(notFound)} among the sheet’s rows of ${capsDate(notFound[0].day)} (moved, or too far back), so ${it(notFound)} changed — type ${notFound.length > 1 ? 'them' : 'it'} into the sheet, then tap “Done in the sheet” on the card${notFound.length > 1 ? 's' : ''}.`].filter(Boolean);
     if (why.length) notice(why.join(' '), true);
     render();
   }
@@ -2400,6 +2423,7 @@ function cardHtml(b) {
     ${vs === 'ready' && !S.busy ? '<button type="button" class="btn small primary" data-act="send1">Send to sheet</button>' : ''}
     ${vs === 'check' ? '<button type="button" class="btn small tape" data-act="ok">Looks good</button>' : ''}
     ${vs === 'dirty' ? '<button type="button" class="btn small tape" data-act="upd">Update sheet row</button>' : ''}
+    ${vs === 'dirty' && b.updNotFound ? '<button type="button" class="btn small" data-act="updok">Done in the sheet</button>' : ''}
     <button type="button" class="btn small danger" data-act="del">Delete</button></div>`;
   if (S.confirmDel === b.id) h += `<div class="confirm"><span>Delete box #${b.seq} and its ${ph.length} photo${ph.length === 1 ? '' : 's'}?${b.sheetRow ? ' Its row stays in the sheet.' : ''}</span>
     <button type="button" class="btn small danger" data-act="del-yes">Delete</button><button type="button" class="btn small" data-act="del-no">Keep</button></div>`;
@@ -2474,13 +2498,16 @@ function renderBar() {
   $('#watchMsg').hidden = !(mode === 'send' && S.autoSend && !S.watch && S.watchFailed && S.cfg.url && S.cfg.token);
 }
 /* The repeat bar. "Mark as sent" only for a row that can be the box's own earlier send: a row of its own day, at or
-   below where the sheet ended at its first try, that no other box here has. Any other repeat (a row of another day,
-   or of a box logged before this one) can only be skipped or sent anyway. A tap works on the boxes as they are then:
-   one sent from its card meanwhile, on its way or deleted is left out, and with nothing left the bar closes. */
+   below where the sheet ended at its first try (above it only when it holds exactly what a try sent: rows deleted by
+   hand above it since moved it up, and that mark never goes down), that no other box here has. Any other repeat (a row
+   of another day, or of a box logged before this one) can only be skipped or sent anyway. A tap works on the boxes as
+   they are then: one sent from its card meanwhile, on its way or deleted is left out, and with nothing left the bar
+   closes. */
 const planLive = l => l.map(b => S.boxes.get(b.id)).filter(b => b && !b.sheetRow && !S.sending.has(b.id));
 function canAdopt(d) {
   const b = S.boxes.get(d.b.id);
-  return !!(b && d.r && b.sendTry && !b.sheetRow && !S.sending.has(b.id) && +d.row >= (b.sendTry.from || 0) && !allBoxes().some(o => o.id !== b.id && +o.sheetRow === +d.row));
+  const exact = () => !!b.sendTry.cells && triedCells(b).some(s => sameCells(asSent(d.r.cells, b.day), asSent(s, b.day)));
+  return !!(b && d.r && b.sendTry && !b.sheetRow && !S.sending.has(b.id) && (+d.row >= (b.sendTry.from || 0) || exact()) && !allBoxes().some(o => o.id !== b.id && +o.sheetRow === +d.row));
 }
 function planGo(l) { const live = planLive(l); if (live.length) executeSend(live); else { S.plan = null; renderPlan(); render(); } }
 function planPrune(p) {                               // boxes deleted, sent or on their way since the bar opened drop out of it
@@ -2500,6 +2527,7 @@ function renderPlan() {
   };
   el.innerHTML = `<b>${dupes.length} of these ${one ? 'is' : 'are'} already in the sheet:</b> ` + dupes.map((d, i) => `#${d.b.seq} ${esc(d.b.row.customer)} (${esc(where(d, i))})`).join(', ') +
     `<div class="muted" style="margin-top:6px">${ok.some(Boolean) ? 'Sent before and the app just didn’t hear back? Tap “Mark as sent” — nothing is written again.'
+      : dupes.some(d => d.r === undefined) ? 'Couldn’t check the sheet just now (weak signal?), nothing was written. Tap Cancel, then Send again in a moment.'
       : `Not ${one ? 'this box’s' : 'these boxes’'} own earlier send — skip ${one ? 'it' : 'them'}, or “Send all anyway” to give ${one ? 'it a row of its' : 'them rows of their'} own.`}</div>` +
     `<div class="row-actions" style="margin-top:8px">` +
     dupes.map((d, i) => ok[i] ? `<button type="button" class="btn small primary" data-adopt="${esc(d.b.id)}">#${d.b.seq} is row ${d.row} — mark as sent</button>` : '').join('') +
@@ -2580,7 +2608,7 @@ document.addEventListener('click', e => {
     case 'inv': patchBox(id, x => { x.row.invoice = !x.row.invoice; x.edited.invoice = true; }); break;
     case 'ok': patchBox(id, x => { x.ok = true; }); break;
     case 'reread': {                                 // "Read again" always reads at high
-      const go = () => { releaseCurrent(id); S.held.delete(id); queueRead(id, { effort: 'high', careful: true }); };
+      const go = () => { releaseCurrent(id); S.held.delete(id); patchBox(id, x => { delete x.heldTrk; }); queueRead(id, { effort: 'high', careful: true }); };
       if (id === S.current) afterPhotos(go); else go();   // the box in progress: once its photos still saving are in
       break;
     }
@@ -2605,6 +2633,7 @@ document.addEventListener('click', e => {
     case 'linesame': lineSame(id, +a.dataset.i); break;
     case 'totals': toggleTotals(id); break;
     case 'upd': updateRows(); break;
+    case 'updok': patchBox(id, x => { x.sentCells = cells(x); delete x.updNotFound; }); break;   // the row out of the app's reach was fixed by hand: the card is what the sheet holds
     case 'del': S.confirmDel = id; render(); break;
     case 'del-no': S.confirmDel = null; render(); break;
     case 'del-yes': deleteBox(id); break;
