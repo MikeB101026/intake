@@ -249,7 +249,7 @@ button{cursor:pointer}
     <button class="btn primary" id="sendBtn" type="button" disabled>Send to sheet</button>
     <button class="btn" id="copyBtn" type="button">Copy rows</button>
     <span class="barmsg" id="barMsg"></span>
-    <span class="barmsg warn" id="watchMsg" hidden>Watch list not loaded — boxes wait for you to tap Send</span>
+    <span class="barmsg warn" id="watchMsg" hidden>Watch list not loaded — names can’t be checked: check them before you tap Send</span>
   </div>
   <textarea class="textcopy" id="copyFallback" hidden readonly></textarea>
 </div>
@@ -1030,14 +1030,17 @@ async function currentBox() {
 }
 /* The box in progress is from an earlier day. Touched in the last 2 hours: one package shot across midnight, so it stays
    one box, dated the day it was started. Older: it was left unfinished (end of the shift), so it is finished as “Finish
-   this box” does — read now, and sent with its own date — and the next photo starts a new box. */
+   this box” does — read now — and the next photo starts a new box. Nobody tapped Finish, so it may be half shot: it
+   never goes in by itself, it waits on Check for the operator (reasons), and goes in with its own date once sent. */
 const lastTouch = b => Math.max(b.updatedAt || 0, b.createdAt || 0, ...b.photos.map(id => Math.min(Date.now(), (S.photos.get(id) || {}).t || 0)));
 const keepOld = b => !b.sheetRow && b.photos.length > 0 && Date.now() - lastTouch(b) < 2 * 3600000;
 function retireOld() {
   const b = S.current && S.boxes.get(S.current);
   if (!b || b.sheetRow || b.day === TODAY() || !b.photos.length || keepOld(b)) return;
+  patchBox(b.id, x => { x.leftOpen = true; });       // finished by the app, not by a tap
   finishCurrent();
-  notice(`Box #${b.seq} of ${capsDate(b.day)} was still in progress. ${S.cfg.url && S.cfg.token ? 'It is being read now' : 'It is read once this device is linked'} — it will go into the sheet with that date.`, true);
+  const day = capsDate(b.day);
+  notice(`Box #${b.seq} of ${day} was left in progress. ${S.cfg.url && S.cfg.token ? 'It is being read now' : 'It is read once this device is linked'} — open ${day} (button at the bottom or the day list), check it, then tap “Looks good” and Send. It goes in with that date.`, true);
 }
 /* The day on screen follows the clock: past midnight an operator who was looking at today gets the new today (one who
    picked another day in the list stays there), never while typing on a card. Runs every minute, when the app comes back
@@ -1392,8 +1395,11 @@ function queueRead(id, opts) {
   const bx = S.boxes.get(id);                                                    // after a "Read again", later reads of that box stay careful
   if (!opts.effort && bx && bx.read && bx.read.careful) opts = Object.assign({ effort: 'high', careful: true }, opts);
   const q = S.readQ.find(j => j.id === id);
-  if (q) Object.assign(q.opts, opts);                                            // already waiting: keep the stronger request (Read again = high)
-  else if (S.active.has(id)) S.again.set(id, Object.assign({}, S.again.get(id), opts));   // being read now: read it again right after (pump)
+  // A note's read of a box in the sheet (noteOnly: Contents and flags only) stays one only while every request for that
+  // read is one: a Read again, or a photo added or moved, asked for meanwhile reads the whole box.
+  const only = (a, c) => !!(a && a.noteOnly && c.noteOnly);
+  if (q) { const no = only(q.opts, opts); Object.assign(q.opts, opts); if (!no) delete q.opts.noteOnly; }   // already waiting: keep the stronger request (Read again = high)
+  else if (S.active.has(id)) { const p = S.again.get(id), m = Object.assign({}, p, opts); if (p && !only(p, opts)) delete m.noteOnly; S.again.set(id, m); }   // being read now: read it again right after (pump)
   else S.readQ.push({ id, opts });
   patchBox(id, b => { if (b.status !== 'sent') b.status = 'queued'; b.readError = ''; });
   pump();
@@ -1413,7 +1419,11 @@ function pump() {
       S.active.delete(job.id);
       const more = S.again.get(job.id); S.again.delete(job.id);
       // The note changed, a photo was added or "Read again" was tapped during the read: read it again before it can be sent.
-      if ((again || more) && !S.readQ.some(j => j.id === job.id)) S.readQ.unshift({ id: job.id, opts: Object.assign({}, job.opts, more || {}) });   // a careful read stays careful
+      if ((again || more) && !S.readQ.some(j => j.id === job.id)) {
+        const o = Object.assign({}, job.opts, more || {});   // a careful read stays careful
+        if (!(more && more.noteOnly)) delete o.noteOnly;      // a note's read only when that is what was asked for since
+        S.readQ.unshift({ id: job.id, opts: o });
+      }
       // Send was tapped before this read: read Ready, it goes now (autoSend); read Check or Error, it waits, and that is said.
       if (S.sendAfter.has(job.id) && !S.readQ.some(j => j.id === job.id)) {
         const nb = S.boxes.get(job.id), v = nb && viewStatus(nb);
@@ -1509,7 +1519,9 @@ async function readBox(id, opts) {
     ms.total = Math.round(performance.now() - T0);
     const { res, verify, contents, flags } = r;
     await patchBox(id, b => {
-      const ed = b.edited || {};
+      // A read the note started on a box in the sheet (noteOnly) takes only Contents and flags: customer, tracking,
+      // weight, shipper and invoice stay as sent, as if fixed by hand — for this read only, never saved.
+      const ed = Object.assign({}, b.edited, b.sheetRow && opts.noteOnly ? { customer: true, tracking: true, weight: true, shipper: true, invoice: true } : {});
       // A box in the sheet: a blank read never empties a filled field, and a placeholder (no name, cut off, not shown)
       // never replaces one.
       const keep = (k, val) => b.sheetRow && (String(val ?? '') === '' || /^(NO NAME ON LABEL|NOT IN FRAME|NOT SHOWN)/.test(caps(val))) && String(b.row[k] ?? '') !== '';
@@ -1535,7 +1547,9 @@ async function readBox(id, opts) {
       // (Another phone's photos load from Drive under new names each time: which of them are new can't be told.)
       if (ed.contents) {
         const eb = b.editBase, had = new Set(eb ? eb.photos : (b.proof || []).flatMap(c => c.photos || []));
-        if (!b.imported && (eb || had.size)) for (const c of contents) if ((c.photos || []).length && c.photos.every(pid => !had.has(pid))) extra.push(`NOT IN CONTENTS — ${c.line}`);
+        // A line already typed into Contents word for word, count and all, is in them: never flagged (another count is).
+        const typed = new Set(String(b.row.contents || '').split(/\s*\/\/\/\s*|\n/).map(caps).filter(Boolean));
+        if (!b.imported && (eb || had.size)) for (const c of contents) if ((c.photos || []).length && c.photos.every(pid => !had.has(pid)) && !typed.has(caps(c.line))) extra.push(`NOT IN CONTENTS — ${c.line}`);
         if (noteUsed !== (eb ? eb.note : ((b.read || {}).note || ''))) extra.push('NOTE CHANGED AFTER THE CONTENTS WERE FIXED — CHECK CONTENTS');
       }
       if (/kg/i.test(res.weight_unit || '') && wp) extra.push(`${wp} KG = ${b.row.weight} LB`);
@@ -1704,14 +1718,17 @@ function dupesOf(b) {
   return (trkIdx.get(t) || []).filter(o => o.id !== b.id);
 }
 function watchHits(b) {
-  if (!S.watch || !b.row.customer) return [];
+  const wl = S.watch || keptWatch();                 // not loaded (no signal, Google busy): the last list this phone had
+  if (!wl || !b.row.customer) return [];
   const toks = new Set(caps(b.row.customer).split(/[^A-Z0-9]+/).filter(Boolean));
-  return S.watch.filter(w => w.alts.some(alt => alt.length >= 2 ? alt.every(t => toks.has(t)) : (alt.length === 1 && toks.size === 1 && toks.has(alt[0])))).map(w => w.note);
+  return wl.filter(w => w.alts.some(alt => alt.length >= 2 ? alt.every(t => toks.has(t)) : (alt.length === 1 && toks.size === 1 && toks.has(alt[0])))).map(w => w.note);
 }
 function reasons(b) {
   const r = [], row = b.row;
   const ph = b.photos.map(id => S.photos.get(id)).filter(Boolean);
   if (!b.imported && !ph.some(p => p.kind === 'label')) r.push('No label photo — add one or type the row.');
+  // Finished by the app on a later day (retireOld), not by a tap: it may be half shot. A read after the check asks again.
+  if (b.leftOpen && !b.sheetRow && !b.ok) r.push(`Left in progress on ${capsDate(b.day)} — check it has its label and all its contents (+ Camera), then tap “Looks good”.`);
   if (b.lostShots) r.push(`${b.lostShots} camera photo${b.lostShots === 1 ? '' : 's'} didn’t arrive — retake ${b.lostShots === 1 ? 'it' : 'them'} with + Camera, then tap “Looks good”.`);
   if (!row.tracking) r.push('No tracking number.');
   else if (/NOT IN FRAME|\?/.test(row.tracking)) r.push('Tracking not fully readable — reshoot or type it.');
@@ -1723,8 +1740,9 @@ function reasons(b) {
   if (/NO NAME ON LABEL|UNREADABLE/.test(row.customer || '')) r.push('Customer name missing or partly unreadable.');
   if (!(b.edited || {}).contents) for (const f of b.flags || []) if (/COUNT UNSURE|NOT ON SLIP/.test(f)) r.push(`${f} — fix it with + / − or “Same as above”, or tap “Looks good”.`);
   for (const f of b.flags || []) {                   // contents fixed by hand miss what a newer photo or note gives (readBox)
-    if (/^NOT IN CONTENTS — /.test(f)) r.push(`${f} — type it into Contents, or tap “Looks good”.`);
-    else if (/^NOTE CHANGED AFTER THE CONTENTS/.test(f)) r.push('The note changed after the contents were fixed by hand — type what it adds into Contents, or tap “Looks good”.');
+    const then = b.sheetRow ? 'then tap “Update sheet row”' : 'or tap “Looks good”';   // in the sheet: what is typed goes in with Update
+    if (/^NOT IN CONTENTS — /.test(f)) r.push(`${f} — type it into Contents, ${then}.`);
+    else if (/^NOTE CHANGED AFTER THE CONTENTS/.test(f)) r.push(`The note changed after the contents were fixed by hand — type what it adds into Contents, ${then}.`);
   }
   for (const d of dupesOf(b)) r.push(`Same tracking as box #${d.seq} on ${capsDate(d.day)}${d.day === b.day ? ' — same box photographed twice? Keep one.' : ' — check you don’t have it twice.'}`);
   return r;
@@ -1774,8 +1792,22 @@ const watchAgain = () => {
 };
 setInterval(watchAgain, 30000);
 window.addEventListener('online', watchAgain);
+/* The last list that loaded is kept on the phone, per backend: while a fresh one can't load, the cards still show their
+   WATCH LIST warnings from it (and nothing goes in by itself meanwhile all the same — see autoSend). */
+const watchKey = () => 'watchNames:' + S.cfg.url;
+let keptW = null, keptFor = null;
+function keptWatch() {                               // null: this phone never loaded one from this backend
+  if (keptFor !== watchKey()) { keptFor = watchKey(); keptW = null; try { const n = JSON.parse(ls.get(keptFor) || 'null'); if (Array.isArray(n)) keptW = parseWatch(n); } catch (e) {} }
+  return keptW;
+}
 function watchSet(j) {
-  S.watch = (j.names || []).map(s => {
+  S.watch = parseWatch(j.names);
+  ls.set(watchKey(), JSON.stringify(j.names || [])); keptFor = null;
+  S.watchErr = '';
+  render(); autoSend();                              // the boxes that waited for it
+}
+function parseWatch(names) {
+  return (names || []).map(s => {
     const i = s.lastIndexOf('(');
     const name = caps(i > 0 ? s.slice(0, i) : s), note = i > 0 ? caps(s.slice(i + 1).replace(/\)\s*$/, '')).replace(/!+/g, '').trim() : '';
     const plain = name.replace(/\([^)]*\)/g, ' ');
@@ -1785,8 +1817,6 @@ function watchSet(j) {
     const alts = [...parts.map(p => p.split(/\s+/).length === 1 && parts.length > 1 ? p + ' ' + surname : p), ...inner].map(a => caps(a).split(/[^A-Z0-9]+/).filter(Boolean)).filter(a => a.length);
     return { name, note: note ? 'WATCH LIST: ' + note : 'ON WATCH LIST', alts };
   });
-  S.watchErr = '';
-  render(); autoSend();                              // the boxes that waited for it
 }
 
 /* ================= sending ================= */
@@ -2507,7 +2537,7 @@ function cardHtml(b) {
     <button type="button" class="btn small" data-act="print" ${row.customer && !S.printing.has(b.id) ? '' : 'disabled'}>${S.printing.has(b.id) ? 'Printing…' : 'Print label'}</button>
     <button type="button" class="btn small" data-act="printn" ${row.customer && !S.printing.has(b.id) ? '' : 'disabled'}>Print 1/N…</button>
     ${vs === 'ready' && !S.busy ? '<button type="button" class="btn small primary" data-act="send1">Send to sheet</button>' : ''}
-    ${vs === 'check' ? '<button type="button" class="btn small tape" data-act="ok">Looks good</button>' : ''}
+    ${vs === 'check' || ((vs === 'sent' || vs === 'dirty') && b.flags.some(f => /^NOT IN CONTENTS — |^NOTE CHANGED AFTER THE CONTENTS/.test(f))) ? '<button type="button" class="btn small tape" data-act="ok">Looks good</button>' : ''}
     ${vs === 'dirty' ? '<button type="button" class="btn small tape" data-act="upd">Update sheet row</button>' : ''}
     ${vs === 'dirty' && b.updNotFound ? '<button type="button" class="btn small" data-act="updok">Done in the sheet</button>' : ''}
     <button type="button" class="btn small danger" data-act="del">Delete</button></div>`;
@@ -2580,8 +2610,12 @@ function renderBar() {
   btn.disabled = !mode;
   btn.classList.toggle('done', !mode && !S.busy && sentToday);
   btn.dataset.mode = mode; btn.dataset.day = away ? away.day : '';
-  // Ready boxes that would go by themselves, but the watch list couldn't load yet: they wait for a tap (see autoSend).
-  $('#watchMsg').hidden = !(mode === 'send' && S.autoSend && !S.watch && S.watchFailed && S.cfg.url && S.cfg.token);
+  // Ready boxes that would go by themselves, but the watch list couldn't load yet: they wait for a tap (see autoSend),
+  // and the bar says whether their names were checked (against the last list this phone had) or can't be.
+  const wm = $('#watchMsg');
+  wm.hidden = !(mode === 'send' && S.autoSend && !S.watch && S.watchFailed && S.cfg.url && S.cfg.token);
+  if (!wm.hidden) wm.textContent = keptWatch() ? 'Watch list not loaded — names checked against the last one this phone had. Boxes wait for you to tap Send'
+    : 'Watch list not loaded — names can’t be checked: check them before you tap Send';
 }
 /* The repeat bar. "Mark as sent" only for a row that can be the box's own earlier send: a row of its own day, at or
    below where the sheet ended at its first try (above it only when it holds exactly what a try sent: rows deleted by
@@ -2692,7 +2726,7 @@ document.addEventListener('click', e => {
   switch (a.dataset.act) {
     case 'toggle': S.expanded.has(id) ? S.expanded.delete(id) : (S.expanded.add(id), loadPics(b)); render(); break;
     case 'inv': patchBox(id, x => { x.row.invoice = !x.row.invoice; x.edited.invoice = true; }); break;
-    case 'ok': patchBox(id, x => { x.ok = true; }); break;
+    case 'ok': patchBox(id, x => { x.ok = true; if (x.sheetRow) handFixed(x); }); break;   // in the sheet: the contents stand as they are against these photos and note (flags go, the row isn't touched)
     case 'reread': {                                 // "Read again" always reads at high
       const go = () => { releaseCurrent(id); S.held.delete(id); patchBox(id, x => { delete x.heldTrk; }); queueRead(id, { effort: 'high', careful: true }); };
       if (id === S.current) afterPhotos(go); else go();   // the box in progress: once its photos still saving are in
@@ -2734,14 +2768,17 @@ document.addEventListener('change', e => {
     patchBox(id, x => { x.note = v.trim(); });
     const ta = $('#curNote');                        // the box in progress: its note box shows the card's note at once
     if (id === S.current && ta.dataset.box === id) { ta.value = v.trim(); ta.dataset.dirty = ''; }
-    // The box is read again with the new note: one being read right now as soon as it finishes, and one being sent or
-    // already in the sheet too (what the note adds then shows as “Changed”, for Update sheet row). The box in progress
-    // gets it when you tap Finish. Another phone's box, or one whose older photos were cleared from this phone (a read
-    // of what is left would drop lines), isn't read by itself: said, so the note is never quietly left out.
-    if (b && (b.note || '') !== was && b.photos.length && b.id !== S.current) {
-      if (b.imported) notice(`Box ${boxNo(b)} is another phone’s box — tap Read again to read it with your note.`);
-      else if (b.purged) notice(`Box ${boxNo(b)}: its older photos were cleared from this phone, so it isn’t read again — type what the note adds into Contents.`, true);
-      else queueRead(id);
+    // The box is read again with the new note: one being read right now as soon as it finishes, one being sent, and one
+    // already in the sheet — that read takes only Contents and flags (what the note adds shows as “Changed”, for Update
+    // sheet row), never the label fields, which can hold a fix made by hand or in the sheet (Read again reads them all).
+    // The box in progress gets it when you tap Finish. Another phone's box (a read here would undo that phone's fixes),
+    // one whose photos were cleared from this phone (a read of what is left would drop lines) or one with no photos here
+    // isn't read by itself: said, whatever is still on the phone, so the note is never quietly left out.
+    if (b && (b.note || '') !== was && b.id !== S.current) {
+      if (b.imported) notice(`Box ${boxNo(b)} is another phone’s box, so it isn’t read again — type what the note adds into Contents.`, true);
+      else if (b.purged) notice(`Box ${boxNo(b)}: its ${b.photos.length ? 'older ' : ''}photos were cleared from this phone, so it isn’t read again — type what the note adds into Contents.`, true);
+      else if (b.photos.length) queueRead(id, b.sheetRow ? { noteOnly: true } : {});
+      else if (b.sheetRow) notice(`Box ${boxNo(b)} has no photos on this phone, so it isn’t read again — type what the note adds into Contents.`, true);
     }
     return;
   }
