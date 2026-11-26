@@ -11,7 +11,7 @@ const NAME = 'r_R32_one_version';
 let ok = true, why = '';
 const fail = m => { ok = false; why += m + '; '; };
 try {
-  const doc = fs.readFileSync(process.env.DOC || path.join(__dirname, '..', 'BACKEND_DEPLOY.md'), 'utf8');
+  const doc = fs.readFileSync(process.env.DOC || path.join(__dirname, '..', 'backend', 'DEPLOY.md'), 'utf8');
   const gs = fs.readFileSync(path.join(process.env.REPO || require('path').resolve(__dirname, '..'), 'backend/Code.gs'), 'utf8');
   const step = (a, b) => { const i = doc.indexOf(a), j = doc.indexOf(b, i + 1); return i < 0 || j < 0 ? '' : doc.slice(i, j); };
   const step1 = step('1. ', '2. '), step4 = step('4. **Deploy', '5. **Watch list');
