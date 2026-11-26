@@ -885,17 +885,22 @@ async function shotTime(file) {
 }
 
 /* ================= camera ================= */
-const CAM = { stream: null, track: null, ic: null, torch: false, split: false, n: 0, queue: Promise.resolve(), target: null, boxNo: 1 };
+const CAM = { stream: null, track: null, ic: null, torch: false, split: false, n: 0, queue: Promise.resolve(), target: null, boxNo: 1, sess: 0 };
 async function openCamera(targetBoxId) {
+  const sess = ++CAM.sess;                           // closed (or opened again) while it starts: this opening stops there
   CAM.target = targetBoxId || null; CAM.split = false; CAM.n = 0;
-  CAM.boxNo = 1; CAM.lost = 0; CAM.lostFull = false; clearTimeout(CAM.msgT);
+  CAM.boxNo = 1; CAM.lost = 0; CAM.lostFull = false; CAM.slowRun = 0; clearTimeout(CAM.msgT);
   $('#cam').hidden = false; $('#camStrip').innerHTML = ''; $('#camCount').textContent = '0';
   $('#camBox').textContent = targetBoxId ? `BOX #${S.boxes.get(targetBoxId)?.seq || ''}` : 'BOX 1';
   $('#newBoxBtn').hidden = !!targetBoxId;
   const msg = $('#camMsg'); msg.hidden = false; msg.textContent = 'Starting camera…';
   warmCache(); clearInterval(CAM.warmT); CAM.warmT = setInterval(warmCache, 240000);   // rules cache ready before the first box
   try {
-    CAM.stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 3840 }, height: { ideal: 2160 } } });
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 3840 }, height: { ideal: 2160 } } });
+    // Close tapped while it said “Starting camera…”: the camera that answers late is stopped, never left running
+    // behind the closed screen (its card would count as still being shot, and never go into the sheet by itself).
+    if (sess !== CAM.sess) { stream.getTracks().forEach(t => t.stop()); return; }
+    CAM.stream = stream;
     const v = $('#video'); v.srcObject = CAM.stream; await v.play();
     CAM.track = CAM.stream.getVideoTracks()[0];
     const caps = CAM.track.getCapabilities ? CAM.track.getCapabilities() : {};
@@ -916,15 +921,18 @@ async function openCamera(targetBoxId) {
         CAM.fillModes = (pc && pc.fillLightMode) || [];        // no automatic flash: it glares on glossy labels
       } catch (e) {}
     }
+    if (sess !== CAM.sess) return;                   // closed while it was starting: no screen kept on
     msg.hidden = true;
     try { CAM.wake = await navigator.wakeLock?.request('screen'); } catch (e) {}
   } catch (e) {
+    if (sess !== CAM.sess) return;                   // closed meanwhile: nothing to say on a camera screen that's gone
     msg.textContent = e && e.name === 'NotAllowedError'
       ? 'Camera blocked. Allow the camera for this app in Chrome (lock icon → Permissions), then try again.'
       : 'The camera couldn’t start. Close other camera apps and try again.';
   }
 }
 function closeCamera() {
+  CAM.sess++;                                        // a camera still starting stops when it answers (CAM.target stays: shots on their way)
   if (CAM.stream) CAM.stream.getTracks().forEach(t => t.stop());
   CAM.stream = null; CAM.track = null; CAM.ic = null; CAM.torch = false; clearInterval(CAM.warmT);
   $('#torchBtn').classList.remove('on');
@@ -941,13 +949,22 @@ function grab(snap, tapAt) {
   const job = CAM.stillQ.then(async () => {
     // A still that would only start 3 s after its tap (stuck behind a slow one) would show wherever the lens is now.
     if (S.sharp && CAM.ic && CAM.track && CAM.track.readyState === 'live' && performance.now() - tapAt < 3000) {
+      const ic = CAM.ic, track = CAM.track; let still = null;
       try {
         const ps = Object.assign({}, CAM.photoSettings || {});
         if ((CAM.fillModes || []).includes('off') && !CAM.torch) ps.fillLightMode = 'off';
-        const still = CAM.ic.takePhoto(Object.keys(ps).length ? ps : undefined);
+        still = ic.takePhoto(Object.keys(ps).length ? ps : undefined);
         const blob = await Promise.race([still, new Promise((_, rej) => setTimeout(() => rej(new Error('slow')), 3000))]);
-        if (blob && blob.size) { snap.then(bm => bm && bm.close && bm.close()); return blob; }
-      } catch (e) { if (e && e.message === 'slow') CAM.ic = null; }   // the camera is stuck: preview frames, at once, until it is opened again
+        if (blob && blob.size) { CAM.slowRun = 0; snap.then(bm => bm && bm.close && bm.close()); return blob; }
+      } catch (e) {
+        // The camera is stuck: preview frames, at once. After one slow still the camera's own photos come back as soon as
+        // that still is in (one slow first photo never turns a whole session into preview frames); after two slow
+        // stills in a row, preview frames until the camera is opened again.
+        if (e && e.message === 'slow' && CAM.ic === ic) {
+          CAM.ic = null;
+          if (++CAM.slowRun < 2) still.then(b => { if (b && b.size && !CAM.ic && CAM.track === track && track.readyState === 'live') CAM.ic = ic; }, () => {});
+        }
+      }
     }
     return frameGrab(await snap);
   });
@@ -983,10 +1000,14 @@ function shoot() {
   const f = $('#flash'); f.classList.add('go'); requestAnimationFrame(() => requestAnimationFrame(() => f.classList.remove('go')));
   try { navigator.vibrate && navigator.vibrate(20); } catch (e) {}
   const k = Math.min(1, 2400 / Math.max(v.videoWidth, v.videoHeight));   // the preview as it is at this tap (at most photo size)
-  const snap = createImageBitmap(v, k < 1 ? { resizeWidth: Math.round(v.videoWidth * k), resizeHeight: Math.round(v.videoHeight * k), resizeQuality: 'low' } : undefined).catch(() => null);
+  let setSnap; const snap = new Promise(r => { setSnap = r; });
   CAM.n++; $('#camCount').textContent = String(CAM.n);
   const slot = document.createElement('span'); slot.className = 'thumb'; $('#camStrip').append(slot); slot.scrollIntoView({ inline: 'end' });
   const raw = grab(snap, tapAt);                        // the still now (or the frame from the tap); stored in the background
+  // The copy of the preview (used only if the still is late) is made once the still has been asked for, so it never
+  // holds the still up — and still in this tap, so it is this tap's frame. It always settles (no copy: the preview as
+  // it is then).
+  queueMicrotask(() => { try { createImageBitmap(v, k < 1 ? { resizeWidth: Math.round(v.videoWidth * k), resizeHeight: Math.round(v.videoHeight * k), resizeQuality: 'low' } : undefined).then(setSnap, () => setSnap(null)); } catch (e) { setSnap(null); } });
   CAM.queue = CAM.queue.then(async () => {
     try {
       const { blob, w, h } = await scaleTo(await raw, 2400, 0.9);
@@ -1042,6 +1063,9 @@ function releaseCurrent(id) {
 function finishCurrent() {
   saveCurNote();                                     // a note still being typed goes with the box (sets b.note at once)
   const b = S.current && S.boxes.get(S.current);
+  // Nothing in it yet (its photos weren't saved — phone full): it stays the box in progress and the next photo goes
+  // into it, never one empty card left behind per NEXT BOX.
+  if (b && !b.photos.length && !b.note && !b.lostShots && !b.sheetRow && b.day === TODAY()) { render(); camBoxLabel(); return; }
   if (b && b.photos.length && !b.sheetRow) queueRead(b.id);
   S.current = null; ls.set('curBox', '');
   render(); camBoxLabel();
@@ -1111,7 +1135,7 @@ $('#camClose').addEventListener('click', () => {
   afterPhotos(() => {
     const shot = CAM.n > 0; closeCamera(); render();
     // + Camera on a card: its new photos are read now, as with DONE (the box in progress is read when it's finished).
-    if (target && shot && target !== S.current) queueRead(target);
+    if (target && shot && target !== S.current) readAdded(target);
     if (target) relink(target);                      // a card already in the sheet: every new shot goes to Drive, in one save
     camLostNotice(); autoSend();
   });
@@ -1120,7 +1144,7 @@ $('#camDone').addEventListener('click', () => {
   const target = CAM.target;
   afterPhotos(() => {
     closeCamera(); render();
-    if (target) { releaseCurrent(target); queueRead(target); relink(target); }   // + Camera on the box in progress: DONE finishes it too
+    if (target) { releaseCurrent(target); readAdded(target); relink(target); }   // + Camera on the box in progress: DONE finishes it too
     else finishCurrent();
     camLostNotice();
   });
@@ -1277,7 +1301,8 @@ async function newBox() {
   const seq = 1 + Math.max(0, ...allBoxes().filter(b => b.day === day).map(b => b.seq || 0));
   const b = { id: uid(), day, seq, createdAt: Date.now(), photos: [], note: '', status: 'new', row: { customer: '', tracking: '', pieces: 1, weight: '', shipper: '', invoice: false, contents: '' },
     proof: [], flags: [], badges: [], read: null, readError: '', edited: {}, ok: false, sheetRow: null, sentCells: null, trk4s: [], noTotals: S.noTotals };
-  await saveBox(b);
+  try { await saveBox(b); }
+  catch (e) { S.boxes.delete(b.id); trkIdx = null; render(); throw e; }   // not saved (phone full): no empty card, no number used up
   return b;
 }
 /* Still being shot: the box in progress, or the card the camera is open on. Its photos are read when that ends. */
@@ -1306,7 +1331,7 @@ async function attachToBox(boxId, photos) {
     undo(); render(); throw e;
   }
   render();
-  if (!shooting(boxId)) queueRead(boxId);            // a photo for a finished box is read with it (a read under way reads it again)
+  if (!shooting(boxId)) readAdded(boxId);            // a photo for a finished box is read with it (a read under way reads it again)
   relink(boxId);                                     // a box in the sheet: to Drive now (QUICK CAM on its card: at DONE / Close)
 }
 let sorting = false;
@@ -1405,11 +1430,19 @@ function pump() {
 async function readBox(id, opts) {
   let b0 = S.boxes.get(id); if (!b0) return;
   // Another phone's box: its photos come from Drive while its card is open. Read it only with all of them here, never
-  // a part (a shorter contents list would then go over the sheet's).
+  // a part (a shorter contents list would then go over the sheet's). They download outside the one read slot (slow on
+  // a weak signal): this phone's own boxes are read and sent meanwhile, and this one is queued again, once, when its
+  // photos are in.
   if (picsMissing(b0)) {
-    await loadPics(b0);
-    b0 = S.boxes.get(id); if (!b0) return;
-    if (picsMissing(b0)) { await patchBox(id, b => { b.readError = 'Some photos of this box haven’t loaded from Drive yet. Tap Read again in a moment.'; }); return; }
+    if (picsWait.has(id)) { Object.assign(picsWait.get(id), opts); return; }   // asked again while they load: one read (the stronger request)
+    picsWait.set(id, Object.assign({}, opts));
+    loadPics(b0).then(() => {                        // (never fails: a photo that can't load is caught inside)
+      const o = picsWait.get(id); picsWait.delete(id);
+      const b = S.boxes.get(id); if (!b) return;
+      if (picsMissing(b)) patchBox(id, x => { x.readError = 'Some photos of this box haven’t loaded from Drive yet. Tap Read again in a moment.'; });
+      else queueRead(id, o);
+    });
+    return;
   }
   const ph = b0.photos.map(pid => S.photos.get(pid)).filter(Boolean);
   if (!ph.length) return;
@@ -1960,6 +1993,14 @@ function photosChanged(x) { if (x.sheetRow) { x.photosLinked = false; delete x.l
 function linkFresh(x) { delete x.linkErrAt; delete x.linkFails; delete x.linkRefused; }
 const camOn = id => !!(CAM.stream && CAM.target === id);
 function relink(id) { const b = S.boxes.get(id); if (b && needsLink(b)) queueLinks(id); }
+/* A photo came into a finished box: it is read with it — but not a box in the sheet whose older photos were cleared
+   from this phone (a read of what is left would put only the new photo's lines over the row's contents): said, so
+   what it adds is typed in by hand. Read again still reads it. */
+function readAdded(id) {
+  const b = S.boxes.get(id);
+  if (b && b.sheetRow && b.purged) notice(`Box ${boxNo(b)}: its older photos were cleared from this phone, so it isn’t read again — type what the new photo adds into Contents.`, true);
+  else queueRead(id);
+}
 /* The purge cleared this box's older photos from the phone (they stay in Drive and in that row's AV–BJ), and a photo
    came in since: a new save would put only what is on the phone into AV–BJ and drop the cleared ones, so it isn't sent.
    (A new row — Send as a new row — holds nothing yet: it gets what is on the phone.) */
@@ -2213,7 +2254,7 @@ async function syncDay() {
 }
 /* Photos of a box that was shot on another device, from the Drive files linked in its sheet row. Returns the download
    still running for that box (a read of the box waits for it). */
-const picsLoading = new Map();
+const picsLoading = new Map(), picsWait = new Map();   // picsWait: box id -> the read asked for while its photos load
 const picsMissing = b => !!b.imported && !picsOff && (b.pics || []).some(p => !(b.picsDone || []).includes(p.id));
 /* Another phone's box takes the links its row holds now (at: when they were asked for). Every save makes new Drive
    files, so the copies this phone loaded of links that are gone leave the card (its own shots stay) and the row's
@@ -2753,7 +2794,7 @@ $('#lbMoveBtn').addEventListener('click', async () => {
   p.box = to; await putPhoto(p);
   await patchBox(to, b => { b.photos.push(pid); b.ok = false; photosChanged(b); });   // the list was made when the viewer opened: it may be in the sheet by now
   if (S.boxes.get(box).photos.length) queueRead(box);
-  queueRead(to);
+  readAdded(to);
   relink(box); relink(to);                            // a box in the sheet: AV–BJ follows the move
 });
 $('#lbKind').addEventListener('click', async () => {
@@ -2919,15 +2960,17 @@ $('#purgeBtn').addEventListener('click', async () => {
 /* A photo saved with its box but listed by no box (the app was closed halfway through saving it, before photos and
    boxes were saved together): it goes back into its box, in shooting order. A box not in the sheet yet is read again;
    one already in the sheet saves its photos to Drive again, this one with them (another phone's box too, once all of
-   its Drive photos are here). Its box is gone: it waits to be sorted. A photo removed on purpose is off the phone
-   before any box forgets it, so it never comes back. */
+   its Drive photos are here). Such a photo is never sorted yet (label / inside comes once it is in its box). One that
+   is sorted wasn't cut off while it was taken — the version before this one could write a photo back after it was
+   removed (Remove photo, or Delete box, while the box was being read) — so it waits to be sorted, where the operator
+   decides, as does one whose box is gone. A photo removed in this version is off the phone before any box forgets it. */
 async function repairStrays() {
   const listed = new Set(), fixed = new Set();
   for (const b of S.boxes.values()) for (const id of b.photos || []) listed.add(id);
   for (const p of [...S.photos.values()].filter(x => x.box && !listed.has(x.id)).sort((a, c) => (a.t || 0) - (c.t || 0))) {
     const b = S.boxes.get(p.box);
     if (p.src === 'drive') { S.photos.delete(p.id); await delPhoto(p.id); continue; }   // a copy of another phone's Drive photo: it loads again with its card
-    if (!b) { p.box = null; await putPhoto(p); continue; }
+    if (!b || p.kind) { p.box = null; await putPhoto(p); continue; }
     b.photos.push(p.id); fixed.add(b);
     if (!b.sheetRow) { b.status = 'new'; b.ok = false; if (b.id !== S.current && !(S.resume || []).includes(b)) S.resume = (S.resume || []).concat(b); }
     else photosChanged(b);                             // saved to Drive at start-up (retryLinks)
@@ -2936,13 +2979,15 @@ async function repairStrays() {
 }
 /* The purge before this version left no mark on the boxes it cleared (all their photos gone): an own box keeps its
    AV–BJ as it is (a photo added later stays on this phone), another phone's box loads its Drive photos again when
-   they're needed. */
+   they're needed. All the marks are saved in one go: thousands of old boxes don't hold up the first start. */
 async function markOldPurges() {
+  const marked = [];
   for (const b of S.boxes.values()) {
     if (!b.sheetRow || !b.photosLinked || b.savedIds || b.purged || b.photos.length || b.createdAt > Date.now() - 7 * 86400000) continue;
     if (!b.imported) b.purged = { row: +b.sheetRow, keep: [] }; else if ((b.picsDone || []).length) b.picsDone = []; else continue;
-    await putBox(b);
+    marked.push(b);
   }
+  if (marked.length) await tx('boxes', 'readwrite', s => { for (const b of marked) s.put(b); });   // not saved: marked again at the next start
 }
 (async () => {
   render();                                            // draw immediately; saved boxes fill in a moment later
